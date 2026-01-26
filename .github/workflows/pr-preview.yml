@@ -26,29 +26,30 @@ jobs:
         run: |
           chmod +x ./apply-settings.sh
 
-          # dry-run を実行し、Markdown 出力を取得
+          # dry-run を実行（stdout: Markdown サマリー、stderr: 詳細ログ）
           set +e
-          output=$(./apply-settings.sh --dry-run --markdown 2>&1)
+          ./apply-settings.sh --dry-run --markdown > summary.txt 2> details.txt
           exit_code=$?
           set -e
 
-          # 出力をファイルに保存（複数行対応）
+          # エラー時の処理
           if [ $exit_code -ne 0 ]; then
-            echo "## エラーが発生しました" > dry-run-output.txt
-            echo "" >> dry-run-output.txt
-            echo "終了コード: $exit_code" >> dry-run-output.txt
-            echo "" >> dry-run-output.txt
-            echo '```' >> dry-run-output.txt
-            echo "$output" >> dry-run-output.txt
-            echo '```' >> dry-run-output.txt
-          else
-            echo "$output" > dry-run-output.txt
+            echo "## エラーが発生しました" > summary.txt
+            echo "" >> summary.txt
+            echo "終了コード: $exit_code" >> summary.txt
           fi
 
-          # GitHub Actions の出力として設定
+          # サマリーを出力として設定
           {
-            echo 'preview<<EOF'
-            cat dry-run-output.txt
+            echo 'summary<<EOF'
+            cat summary.txt
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+          # 詳細ログを出力として設定
+          {
+            echo 'details<<EOF'
+            cat details.txt
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
@@ -72,10 +73,14 @@ jobs:
 
             この PR がマージされた場合に適用される設定の一覧です。
 
-            <details>
-            <summary>詳細を表示</summary>
+            ${{ steps.dry-run.outputs.summary }}
 
-            ${{ steps.dry-run.outputs.preview }}
+            <details>
+            <summary>詳細ログを表示</summary>
+
+            ```
+            ${{ steps.dry-run.outputs.details }}
+            ```
 
             </details>
 

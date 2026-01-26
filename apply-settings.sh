@@ -752,8 +752,8 @@ for owner in "${TARGETS[@]}"; do
     continue
   }
 
-  # 各リポジトリを処理
-  echo "$repos_json" | jq -c '.[]' | while read -r repo_json; do
+  # 各リポジトリを処理（プロセス置換でサブシェル問題を回避）
+  while read -r repo_json; do
     repo_name=$(echo "$repo_json" | jq -r '.name')
     repo_full_name=$(echo "$repo_json" | jq -r '.full_name')
 
@@ -809,7 +809,7 @@ for owner in "${TARGETS[@]}"; do
     apply_copilot_code_review "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.copilot_code_review // {}')"
 
     md_log ""
-  done
+  done < <(echo "$repos_json" | jq -c '.[]')
 done
 
 log ""
