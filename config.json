@@ -1,0 +1,128 @@
+{
+  "targets": ["tomacheese", "book000"],
+
+  "defaults": {
+    "repo_settings": {
+      "mode": "upsert",
+      "values": {
+        "allow_squash_merge": true,
+        "allow_merge_commit": false,
+        "allow_rebase_merge": false,
+        "squash_merge_commit_title": "PR_TITLE",
+        "squash_merge_commit_message": "COMMIT_MESSAGES",
+        "allow_update_branch": true,
+        "allow_auto_merge": true,
+        "delete_branch_on_merge": true
+      }
+    },
+
+    "workflow_permissions": {
+      "mode": "upsert",
+      "values": {
+        "default_workflow_permissions": "write",
+        "can_approve_pull_request_reviews": true
+      }
+    },
+
+    "actions_variables": {
+      "mode": "upsert",
+      "values": {
+        "COPILOT_AGENT_FIREWALL_ENABLED": "false"
+      }
+    },
+
+    "rulesets": {
+      "mode": "upsert",
+      "create_if_missing": true,
+      "template": {
+        "name": "master",
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {
+          "ref_name": {
+            "exclude": [],
+            "include": ["~DEFAULT_BRANCH"]
+          }
+        },
+        "rules": {
+          "deletion": true,
+          "non_fast_forward": true,
+          "pull_request": {
+            "required_approving_review_count": 0,
+            "dismiss_stale_reviews_on_push": true,
+            "require_code_owner_review": false,
+            "require_last_push_approval": false,
+            "required_review_thread_resolution": true,
+            "allowed_merge_methods": ["squash"]
+          },
+          "required_status_checks": {
+            "strict_required_status_checks_policy": false,
+            "do_not_enforce_on_create": true,
+            "detection": "auto",
+            "exclude_patterns": ["reviewer", "labeler"],
+            "prefer_finished_jobs": true
+          },
+          "copilot_code_review": {
+            "review_on_push": true,
+            "review_draft_pull_requests": true
+          }
+        },
+        "bypass_actors": []
+      }
+    },
+
+    "copilot_code_review": {
+      "mode": "upsert",
+      "values": {
+        "review_on_push": true,
+        "review_draft_pull_requests": true
+      }
+    }
+  },
+
+  "rules": [
+    {
+      "name": "アーカイブ済みリポジトリ",
+      "filter": {
+        "is_archived": true
+      },
+      "settings": {
+        "_all": { "mode": "skip" }
+      }
+    },
+    {
+      "name": "フォークリポジトリ",
+      "filter": {
+        "is_fork": true
+      },
+      "settings": {
+        "repo_settings": { "mode": "skip" },
+        "workflow_permissions": { "mode": "skip" },
+        "actions_variables": { "mode": "skip" },
+        "rulesets": { "mode": "skip" },
+        "copilot_code_review": { "mode": "skip" }
+      }
+    },
+    {
+      "name": "PRワークフローなしのリポジトリ",
+      "filter": {
+        "has_pr_workflow": false
+      },
+      "settings": {
+        "rulesets": {
+          "mode": "upsert",
+          "create_if_missing": false
+        }
+      }
+    },
+    {
+      "name": ".github リポジトリ",
+      "filter": {
+        "name_pattern": "^\\.github$"
+      },
+      "settings": {
+        "rulesets": { "mode": "skip" }
+      }
+    }
+  ]
+}
