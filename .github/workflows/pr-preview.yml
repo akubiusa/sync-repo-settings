@@ -27,10 +27,10 @@ jobs:
           chmod +x ./apply-settings.sh
 
           # dry-run を実行（stdout: Markdown サマリー、stderr: 詳細ログ）
-          set +e
+          set +e +o pipefail
           ./apply-settings.sh --dry-run --markdown > summary.txt 2> details.txt
           exit_code=$?
-          set -e
+          set -eo pipefail
 
           # エラー時の処理
           if [ $exit_code -ne 0 ]; then

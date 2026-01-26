@@ -242,12 +242,22 @@ evaluate_filter() {
   echo "true"
 }
 
+# base64 デコード（Linux/macOS 両対応）
+decode_base64() {
+  if base64 --help 2>&1 | grep -q '\-d'; then
+    base64 -d
+  else
+    base64 -D
+  fi
+}
+
 # PR ワークフローがあるかチェック
 check_has_pr_workflow() {
   local owner="$1"
   local repo="$2"
 
-  local workflows=$(gh_api "/repos/$owner/$repo/contents/.github/workflows" 2>/dev/null | jq -r '.[].name' 2>/dev/null) || {
+  local workflows
+  workflows=$(gh_api "/repos/$owner/$repo/contents/.github/workflows" 2>/dev/null | jq -r '.[].name' 2>/dev/null) || {
     echo "false"
     return
   }
@@ -257,7 +267,10 @@ check_has_pr_workflow() {
     return
   fi
 
-  for wf in $workflows; do
+  # スペースを含むファイル名に対応するため while-read を使用
+  while IFS= read -r wf; do
+    [ -z "$wf" ] && continue
+
     # ワークフローファイルの内容を取得（配列の場合はスキップ）
     local file_response
     file_response=$(gh_api "/repos/$owner/$repo/contents/.github/workflows/$wf" 2>/dev/null) || continue
@@ -268,12 +281,13 @@ check_has_pr_workflow() {
     fi
 
     local content
-    content=$(echo "$file_response" | jq -r '.content' | base64 -d 2>/dev/null) || continue
-    if echo "$content" | grep -qE '^\s*(pull_request|pull_request_target):'; then
+    content=$(echo "$file_response" | jq -r '.content' | decode_base64 2>/dev/null) || continue
+    # block-style (pull_request:) と flow-style (on: [pull_request]) の両方に対応
+    if echo "$content" | grep -qE '(^\s*(pull_request|pull_request_target):)|(^\s*on:\s*\[.*\bpull_request(_target)?\b.*\])'; then
       echo "true"
       return
     fi
-  done
+  done <<< "$workflows"
 
   echo "false"
 }
@@ -528,7 +542,10 @@ detect_status_checks() {
 
   local status_checks="[]"
 
-  for wf in $workflows; do
+  # スペースを含むファイル名に対応するため while-read を使用
+  while IFS= read -r wf; do
+    [ -z "$wf" ] && continue
+
     # ワークフローファイルの内容を取得（配列の場合はスキップ）
     local file_response
     file_response=$(gh_api "/repos/$owner/$repo/contents/.github/workflows/$wf" 2>/dev/null) || continue
@@ -539,15 +556,16 @@ detect_status_checks() {
     fi
 
     local content
-    content=$(echo "$file_response" | jq -r '.content' | base64 -d 2>/dev/null) || continue
+    content=$(echo "$file_response" | jq -r '.content' | decode_base64 2>/dev/null) || continue
 
-    # PR トリガーがあるか確認
-    if ! echo "$content" | grep -qE '^\s*(pull_request|pull_request_target):'; then
+    # PR トリガーがあるか確認（block-style と flow-style の両方に対応）
+    if ! echo "$content" | grep -qE '(^\s*(pull_request|pull_request_target):)|(^\s*on:\s*\[.*\bpull_request(_target)?\b.*\])'; then
       continue
     fi
 
     # ワークフロー名を取得
-    local wf_name=$(echo "$content" | grep -E '^name:' | head -1 | sed 's/name: //' | tr -d '"' | tr -d "'")
+    local wf_name
+    wf_name=$(echo "$content" | grep -E '^name:' | head -1 | sed 's/name: //' | tr -d '"' | tr -d "'")
 
     # 除外パターンに一致する場合はスキップ
     if [ -n "$exclude_patterns" ] && echo "$wf_name" | grep -qiE "$exclude_patterns"; then
@@ -555,19 +573,22 @@ detect_status_checks() {
     fi
 
     # ジョブ名を取得
-    local job_names=$(echo "$content" | awk '/^jobs:/{found=1; next} found && /^  [a-zA-Z0-9_-]+:/{gsub(/:$/, "", $1); print $1}')
+    local job_names
+    job_names=$(echo "$content" | awk '/^jobs:/{found=1; next} found && /^  [a-zA-Z0-9_-]+:/{gsub(/:$/, "", $1); print $1}')
 
     local finished_job=""
     local first_job=""
 
-    for job in $job_names; do
+    # スペースを含むジョブ名に対応するため while-read を使用
+    while IFS= read -r job; do
+      [ -z "$job" ] && continue
       if [ -z "$first_job" ]; then
         first_job="$job"
       fi
       if echo "$job" | grep -qE '^finished-'; then
         finished_job="$job"
       fi
-    done
+    done <<< "$job_names"
 
     # finished ジョブを優先
     local selected_job="$first_job"
@@ -577,9 +598,10 @@ detect_status_checks() {
 
     if [ -n "$selected_job" ]; then
       local check_name="$wf_name / $selected_job"
+      # integration_id 15368 は GitHub Actions のアプリケーション ID
       status_checks=$(echo "$status_checks" | jq --arg ctx "$check_name" '. + [{"context": $ctx, "integration_id": 15368}]')
     fi
-  done
+  done <<< "$workflows"
 
   echo "$status_checks"
 }
