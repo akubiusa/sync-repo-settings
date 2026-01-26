@@ -489,6 +489,13 @@ apply_rulesets() {
 
   # 既存のルールセットを取得
   local existing_rulesets=$(gh_api "/repos/$owner/$repo/rulesets" 2>/dev/null) || existing_rulesets="[]"
+
+  # レスポンスが配列かどうかを確認（エラーレスポンスの場合はオブジェクト）
+  if ! echo "$existing_rulesets" | jq -e 'type == "array"' > /dev/null 2>&1; then
+    log_verbose "rulesets: ルールセット取得エラー（無効なレスポンス）"
+    existing_rulesets="[]"
+  fi
+
   local ruleset_count=$(echo "$existing_rulesets" | jq 'length')
 
   if [ "$ruleset_count" = "0" ]; then
@@ -580,6 +587,12 @@ apply_copilot_code_review() {
   # 既存のルールセットを取得
   local rulesets=$(gh_api "/repos/$owner/$repo/rulesets" 2>/dev/null) || {
     log_verbose "copilot_code_review: ルールセット取得エラー"
+    return
+  }
+
+  # レスポンスが配列かどうかを確認（エラーレスポンスの場合はオブジェクト）
+  local is_array=$(echo "$rulesets" | jq -e 'type == "array"' 2>/dev/null) || {
+    log_verbose "copilot_code_review: ルールセット取得エラー（無効なレスポンス）"
     return
   }
 
