@@ -333,12 +333,13 @@ apply_repo_settings() {
   }
 
   # 変更が必要な項目を検出
+  # jq の // 演算子は false を falsy として扱うため、null チェックを明示的に行う
   local -a changes=()
   for key in $(echo "$values" | jq -r 'keys[]'); do
-    local desired_value
-    local current_value
+    local desired_value current_value
     desired_value=$(echo "$values" | jq -r ".[\"$key\"]")
-    current_value=$(echo "$current_settings" | jq -r ".[\"$key\"] // \"\"")
+    # null の場合のみ空文字列を返し、false はそのまま返す
+    current_value=$(echo "$current_settings" | jq -r "if .[\"$key\"] == null then \"\" else .[\"$key\"] end")
 
     if [ "$desired_value" != "$current_value" ]; then
       changes+=("$key: $current_value → $desired_value")
@@ -358,11 +359,17 @@ apply_repo_settings() {
   fi
 
   # API呼び出し用のパラメータを配列として構築（コマンドインジェクション対策）
+  # -f は文字列、-F は boolean/数値（raw JSON）用
   local -a params=()
   for key in $(echo "$values" | jq -r 'keys[]'); do
-    local value
+    local value value_type
     value=$(echo "$values" | jq -r ".[\"$key\"]")
-    params+=("-f" "$key=$value")
+    value_type=$(echo "$values" | jq -r ".[\"$key\"] | type")
+    if [ "$value_type" = "boolean" ] || [ "$value_type" = "number" ]; then
+      params+=("-F" "$key=$value")
+    else
+      params+=("-f" "$key=$value")
+    fi
   done
 
   if [ ${#params[@]} -gt 0 ]; then
@@ -398,8 +405,8 @@ apply_workflow_permissions() {
     current_settings="{}"
   }
 
-  local current_perms=$(echo "$current_settings" | jq -r '.default_workflow_permissions // ""')
-  local current_approve=$(echo "$current_settings" | jq -r '.can_approve_pull_request_reviews // ""')
+  local current_perms=$(echo "$current_settings" | jq -r 'if .default_workflow_permissions == null then "" else .default_workflow_permissions end')
+  local current_approve=$(echo "$current_settings" | jq -r 'if .can_approve_pull_request_reviews == null then "" else .can_approve_pull_request_reviews end')
 
   # 変更が必要かチェック
   local -a changes=()
