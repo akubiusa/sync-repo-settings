@@ -20,16 +20,30 @@ jobs:
 
       - name: Run dry-run
         id: dry-run
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
           chmod +x ./apply-settings.sh
 
           # dry-run を実行し、Markdown 出力を取得
+          set +e
           output=$(./apply-settings.sh --dry-run --markdown 2>&1)
+          exit_code=$?
+          set -e
 
           # 出力をファイルに保存（複数行対応）
-          echo "$output" > dry-run-output.txt
+          if [ $exit_code -ne 0 ]; then
+            echo "## エラーが発生しました" > dry-run-output.txt
+            echo "" >> dry-run-output.txt
+            echo "終了コード: $exit_code" >> dry-run-output.txt
+            echo "" >> dry-run-output.txt
+            echo '```' >> dry-run-output.txt
+            echo "$output" >> dry-run-output.txt
+            echo '```' >> dry-run-output.txt
+          else
+            echo "$output" > dry-run-output.txt
+          fi
 
           # GitHub Actions の出力として設定
           {
