@@ -16,6 +16,28 @@ TARGET_REPO=""
 VERBOSE=false
 OUTPUT_FORMAT="text"  # text or markdown
 
+# 一時ファイル管理用配列
+TEMP_FILES=()
+
+# 終了時に一時ファイルをクリーンアップ
+cleanup_temp_files() {
+  for f in "${TEMP_FILES[@]}"; do
+    rm -f "$f" 2>/dev/null || true
+  done
+}
+trap cleanup_temp_files EXIT
+
+# 一時ファイルを作成し、管理配列に登録
+create_temp_file() {
+  local tmp
+  tmp=$(mktemp) || {
+    echo "Failed to create temp file" >&2
+    return 1
+  }
+  TEMP_FILES+=("$tmp")
+  echo "$tmp"
+}
+
 # =============================================================================
 # ヘルプ
 # =============================================================================
@@ -316,8 +338,24 @@ merge_settings() {
     return
   fi
 
-  # 通常のマージ
-  echo "$defaults" | jq --argjson overrides "$overrides" '. * $overrides'
+  # 通常のマージ（mode: skip は上書きしない）
+  # 既存設定で mode: skip の場合、後続ルールで上書きされないように保護
+  local result="$defaults"
+  for key in repo_settings workflow_permissions actions_variables rulesets copilot_code_review; do
+    local current_mode
+    current_mode=$(echo "$result" | jq -r ".${key}.mode // \"\"")
+    local override_value
+    override_value=$(echo "$overrides" | jq ".${key} // null")
+
+    if [ "$override_value" != "null" ]; then
+      if [ "$current_mode" = "skip" ]; then
+        # mode: skip は保護（上書きしない）
+        continue
+      fi
+      result=$(echo "$result" | jq --argjson override "$override_value" ".${key} = (.${key} // {}) * \$override")
+    fi
+  done
+  echo "$result"
 }
 
 # =============================================================================
@@ -522,6 +560,9 @@ apply_actions_variables() {
 }
 
 # ステータスチェックを自動検出
+# ワークフローファイルを読み取り、PR トリガーがあるワークフローを特定
+# paths 条件があるワークフローは除外（ただし pull_request_target も存在する場合は除外しない）
+# 各ワークフローから1つのジョブを選択（prefer_finished_jobs が true なら finished ジョブを優先）
 detect_status_checks() {
   local owner="$1"
   local repo="$2"
@@ -530,7 +571,9 @@ detect_status_checks() {
   local exclude_patterns=$(echo "$settings" | jq -r '.exclude_patterns // [] | join("|")')
   local prefer_finished=$(echo "$settings" | jq -r '.prefer_finished_jobs // true')
 
-  local workflows=$(gh_api "/repos/$owner/$repo/contents/.github/workflows" 2>/dev/null | jq -r '.[].name' 2>/dev/null) || {
+  # ワークフローファイル一覧を取得
+  local workflows
+  workflows=$(gh_api "/repos/$owner/$repo/contents/.github/workflows" 2>/dev/null | jq -r '.[].name' 2>/dev/null) || {
     echo "[]"
     return
   }
@@ -540,13 +583,13 @@ detect_status_checks() {
     return
   fi
 
-  local status_checks="[]"
+  local all_checks="[]"
 
-  # スペースを含むファイル名に対応するため while-read を使用
+  # 各ワークフローファイルを読み取り
   while IFS= read -r wf; do
     [ -z "$wf" ] && continue
 
-    # ワークフローファイルの内容を取得（配列の場合はスキップ）
+    # ワークフローファイルの内容を取得
     local file_response
     file_response=$(gh_api "/repos/$owner/$repo/contents/.github/workflows/$wf" 2>/dev/null) || continue
 
@@ -563,6 +606,26 @@ detect_status_checks() {
       continue
     fi
 
+    # paths 条件があるワークフローは除外（特定ファイル変更時のみ実行されるため）
+    # ただし、pull_request_target も存在する場合は除外しない
+    # （pull_request_target は paths 条件に関係なく実行される）
+    if echo "$content" | grep -qE '^\s+paths:' && \
+       ! echo "$content" | grep -qE '^\s*pull_request_target:'; then
+      continue
+    fi
+
+    # pull_request_target で types: [closed] のみのワークフローは除外
+    # PR クローズ時のみ実行されるため、必須チェックとしては不適切
+    if echo "$content" | grep -qE '^\s*pull_request_target:' && \
+       ! echo "$content" | grep -qE '^\s*pull_request:'; then
+      # pull_request_target のみの場合、types を確認
+      # types に closed があり、opened/synchronize/reopened がない場合はスキップ
+      if echo "$content" | grep -qE '^\s+-\s*closed' && \
+         ! echo "$content" | grep -qE '^\s+-\s*(opened|synchronize|reopened)'; then
+        continue
+      fi
+    fi
+
     # ワークフロー名を取得
     local wf_name
     wf_name=$(echo "$content" | grep -E '^name:' | head -1 | sed 's/name: //' | tr -d '"' | tr -d "'")
@@ -572,38 +635,77 @@ detect_status_checks() {
       continue
     fi
 
-    # ジョブ名を取得
-    local job_names
-    job_names=$(echo "$content" | awk '/^jobs:/{found=1; next} found && /^  [a-zA-Z0-9_-]+:/{gsub(/:$/, "", $1); print $1}')
+    # ワークフロー ID を取得（ファイル名から）
+    local workflow_file="$wf"
 
-    local finished_job=""
-    local first_job=""
-
-    # スペースを含むジョブ名に対応するため while-read を使用
-    while IFS= read -r job; do
-      [ -z "$job" ] && continue
-      if [ -z "$first_job" ]; then
-        first_job="$job"
-      fi
-      if echo "$job" | grep -qE '^finished-'; then
-        finished_job="$job"
-      fi
-    done <<< "$job_names"
-
-    # finished ジョブを優先
-    local selected_job="$first_job"
-    if [ "$prefer_finished" = "true" ] && [ -n "$finished_job" ]; then
-      selected_job="$finished_job"
+    # ワークフローのトリガーに応じてイベントフィルタを決定
+    # pull_request_target がある場合はそちらを優先（paths 条件に関係なく実行されるため）
+    local event_filter="pull_request"
+    if echo "$content" | grep -qE '^\s*pull_request_target:'; then
+      event_filter="pull_request_target"
     fi
 
-    if [ -n "$selected_job" ]; then
-      local check_name="$wf_name / $selected_job"
+    # このワークフローの最新実行を取得
+    local workflow_runs
+    workflow_runs=$(gh_api "/repos/$owner/$repo/actions/workflows/$workflow_file/runs?event=$event_filter&per_page=5" 2>/dev/null) || continue
+
+    # 最新のジョブが存在する実行を取得
+    # action_required は承認待ちでジョブがないため除外
+    local run_id
+    run_id=$(echo "$workflow_runs" | jq -r '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure" or .conclusion == "cancelled")] | .[0].id // empty')
+
+    if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+      # ジョブが存在する実行がない場合は最新の実行を使用
+      run_id=$(echo "$workflow_runs" | jq -r '.workflow_runs[0].id // empty')
+    fi
+
+    if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+      continue
+    fi
+
+    # 実行のジョブからチェック名を取得
+    local jobs_response
+    jobs_response=$(gh_api "/repos/$owner/$repo/actions/runs/$run_id/jobs" 2>/dev/null) || continue
+
+    local check_names
+    check_names=$(echo "$jobs_response" | jq -r '.jobs[].name')
+
+    [ -z "$check_names" ] && continue
+
+    local finished_check=""
+    local first_check=""
+
+    while IFS= read -r check_name; do
+      [ -z "$check_name" ] && continue
+
+      # ジョブ名が除外パターンに一致する場合はスキップ
+      if [ -n "$exclude_patterns" ] && echo "$check_name" | grep -qiE "$exclude_patterns"; then
+        continue
+      fi
+
+      if [ -z "$first_check" ]; then
+        first_check="$check_name"
+      fi
+      # finished ジョブの検出: "finished-xxx", "xxx finished", "Check finished xxx" などのパターン
+      if echo "$check_name" | grep -qiE '(^finished[-: ]|[-: ]finished$|[-: ]finished[-: ])'; then
+        finished_check="$check_name"
+      fi
+    done <<< "$check_names"
+
+    # このワークフローから1つのジョブを選択
+    # prefer_finished が true で finished ジョブがあれば finished を、なければ最初のジョブを選択
+    local selected_check="$first_check"
+    if [ "$prefer_finished" = "true" ] && [ -n "$finished_check" ]; then
+      selected_check="$finished_check"
+    fi
+
+    if [ -n "$selected_check" ]; then
       # integration_id 15368 は GitHub Actions のアプリケーション ID
-      status_checks=$(echo "$status_checks" | jq --arg ctx "$check_name" '. + [{"context": $ctx, "integration_id": 15368}]')
+      all_checks=$(echo "$all_checks" | jq --arg ctx "$selected_check" '. + [{"context": $ctx, "integration_id": 15368}]')
     fi
   done <<< "$workflows"
 
-  echo "$status_checks"
+  echo "$all_checks"
 }
 
 # Rulesets を適用
@@ -689,15 +791,120 @@ apply_rulesets() {
         bypass_actors: $bypass_actors
       }')
 
-    local result=$(echo "$payload" | gh_api -X POST "/repos/$owner/$repo/rulesets" --input - 2>&1) || {
-      log "    rulesets: creation error"
+    local result error_output
+    error_output=$(create_temp_file) || return 1
+    result=$(echo "$payload" | gh_api -X POST "/repos/$owner/$repo/rulesets" --input - 2>"$error_output") || {
+      local error_msg
+      error_msg=$(cat "$error_output")
+      # 403 エラー（GitHub Pro が必要）の場合は警告のみ
+      # gh api はエラー時に "HTTP 403" を stderr に出力する
+      if echo "$error_msg" | grep -qE 'HTTP 403|403 Forbidden'; then
+        log "    rulesets: スキップ（GitHub Pro が必要、またはプライベートリポジトリ）"
+        return 0
+      fi
+      log "    rulesets: creation error - $error_msg"
       return 1
     }
 
-    local ruleset_id=$(echo "$result" | jq -r '.id')
-    log "    rulesets: 作成完了 (ID: $ruleset_id)"
+    # レスポンスが有効な JSON かつ id を含むか確認
+    local ruleset_id
+    if echo "$result" | jq -e '.id' > /dev/null 2>&1; then
+      ruleset_id=$(echo "$result" | jq -r '.id')
+      log "    rulesets: 作成完了 (ID: $ruleset_id)"
+    else
+      log "    rulesets: 作成完了（ID 取得失敗）"
+    fi
   else
-    log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)"
+    # 既存のルールセットがある場合は、mode: upsert なら更新
+    if [ "$mode" = "upsert" ]; then
+      # ステータスチェックを検出
+      local status_check_settings=$(echo "$template" | jq '.rules.required_status_checks // {}')
+      local detection=$(echo "$status_check_settings" | jq -r '.detection // "auto"')
+
+      local status_checks="[]"
+      if [ "$detection" = "auto" ]; then
+        status_checks=$(detect_status_checks "$owner" "$repo" "$status_check_settings")
+      fi
+
+      if [ "$status_checks" = "[]" ]; then
+        log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)、ステータスチェック検出なし"
+        return
+      fi
+
+      # 最初のルールセットを対象に更新（通常は master ルールセット）
+      local ruleset_id=$(echo "$existing_rulesets" | jq -r '.[0].id')
+      local ruleset_name=$(echo "$existing_rulesets" | jq -r '.[0].name')
+
+      # 既存のルールセットの詳細を取得
+      local existing_ruleset
+      existing_ruleset=$(gh_api "/repos/$owner/$repo/rulesets/$ruleset_id" 2>/dev/null) || {
+        log_verbose "rulesets: 既存ルールセット取得エラー"
+        return
+      }
+
+      # 既存の required_status_checks を取得
+      local existing_status_checks
+      existing_status_checks=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks] | flatten')
+
+      # 検出したステータスチェックと既存のものが同じか確認
+      local new_contexts=$(echo "$status_checks" | jq -r '[.[].context] | sort | join(",")')
+      local existing_contexts=$(echo "$existing_status_checks" | jq -r '[.[].context] | sort | join(",")')
+
+      if [ "$new_contexts" = "$existing_contexts" ]; then
+        log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)、ステータスチェック変更なし"
+        return
+      fi
+
+      if [ "$DRY_RUN" = true ]; then
+        log "    [DRY-RUN] rulesets (update): ステータスチェック: $existing_contexts → $new_contexts"
+        md_log_change "  - **rulesets** (update): ステータスチェック: $existing_contexts → $new_contexts"
+        return
+      fi
+
+      # ルールを更新（required_status_checks が存在しない場合は追加）
+      local has_status_check_rule
+      has_status_check_rule=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "required_status_checks")] | length')
+
+      local updated_rules
+      if [ "$has_status_check_rule" = "0" ]; then
+        # required_status_checks ルールが存在しない場合は追加
+        updated_rules=$(echo "$existing_ruleset" | jq --argjson new_checks "$status_checks" '
+          .rules + [{"type": "required_status_checks", "parameters": {"required_status_checks": $new_checks}}]
+        ')
+      else
+        # 既存のルールを更新
+        updated_rules=$(echo "$existing_ruleset" | jq --argjson new_checks "$status_checks" '
+          .rules | map(
+            if .type == "required_status_checks" then
+              .parameters.required_status_checks = $new_checks
+            else
+              .
+            end
+          )')
+      fi
+
+      local update_payload
+      update_payload=$(echo "$existing_ruleset" | jq --argjson rules "$updated_rules" '{
+        name: .name,
+        target: .target,
+        enforcement: .enforcement,
+        conditions: .conditions,
+        rules: $rules,
+        bypass_actors: .bypass_actors
+      }')
+
+      local error_output
+      error_output=$(create_temp_file) || return
+      if gh_api -X PUT "/repos/$owner/$repo/rulesets/$ruleset_id" --input - <<< "$update_payload" 2>"$error_output" > /dev/null; then
+        log "    rulesets [$ruleset_name]: ステータスチェック更新完了"
+      else
+        local error_msg
+        error_msg=$(cat "$error_output")
+        log "    rulesets: 更新エラー - $error_msg"
+      fi
+    else
+      log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)"
+    fi
   fi
 }
 
