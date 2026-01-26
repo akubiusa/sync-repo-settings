@@ -98,9 +98,24 @@ log_verbose() {
 
 # Markdown用の出力バッファ
 MD_BUFFER=""
+# リポジトリヘッダーの遅延出力用
+REPO_HEADER=""
+REPO_HEADER_OUTPUT=false
 
 md_log() {
   if [ "$OUTPUT_FORMAT" = "markdown" ]; then
+    MD_BUFFER+="$1"$'\n'
+  fi
+}
+
+# 変更がある場合にヘッダーを出力してからログを追加
+md_log_change() {
+  if [ "$OUTPUT_FORMAT" = "markdown" ] && [ "$DRY_RUN" = true ]; then
+    # ヘッダーがまだ出力されていない場合は出力
+    if [ "$REPO_HEADER_OUTPUT" = false ] && [ -n "$REPO_HEADER" ]; then
+      MD_BUFFER+="$REPO_HEADER"$'\n'
+      REPO_HEADER_OUTPUT=true
+    fi
     MD_BUFFER+="$1"$'\n'
   fi
 }
@@ -310,9 +325,35 @@ apply_repo_settings() {
 
   local values=$(echo "$settings" | jq '.values // {}')
 
+  # 現在の設定を取得
+  local current_settings
+  current_settings=$(gh_api "/repos/$owner/$repo" 2>/dev/null) || {
+    log_verbose "repo_settings: 現在の設定取得エラー"
+    current_settings="{}"
+  }
+
+  # 変更が必要な項目を検出
+  local -a changes=()
+  for key in $(echo "$values" | jq -r 'keys[]'); do
+    local desired_value
+    local current_value
+    desired_value=$(echo "$values" | jq -r ".[\"$key\"]")
+    current_value=$(echo "$current_settings" | jq -r ".[\"$key\"] // \"\"")
+
+    if [ "$desired_value" != "$current_value" ]; then
+      changes+=("$key: $current_value → $desired_value")
+    fi
+  done
+
+  # 変更がない場合はスキップ
+  if [ ${#changes[@]} -eq 0 ]; then
+    log_verbose "repo_settings: 変更なし"
+    return
+  fi
+
   if [ "$DRY_RUN" = true ]; then
-    log "    [DRY-RUN] repo_settings ($mode)"
-    md_log "  - **repo_settings** ($mode): 適用予定"
+    log "    [DRY-RUN] repo_settings ($mode): ${changes[*]}"
+    md_log_change "  - **repo_settings** ($mode): ${changes[*]}"
     return
   fi
 
@@ -350,9 +391,34 @@ apply_workflow_permissions() {
   local default_perms=$(echo "$values" | jq -r '.default_workflow_permissions // "write"')
   local can_approve=$(echo "$values" | jq -r '.can_approve_pull_request_reviews // "true"')
 
+  # 現在の設定を取得
+  local current_settings
+  current_settings=$(gh_api "/repos/$owner/$repo/actions/permissions/workflow" 2>/dev/null) || {
+    log_verbose "workflow_permissions: 現在の設定取得エラー"
+    current_settings="{}"
+  }
+
+  local current_perms=$(echo "$current_settings" | jq -r '.default_workflow_permissions // ""')
+  local current_approve=$(echo "$current_settings" | jq -r '.can_approve_pull_request_reviews // ""')
+
+  # 変更が必要かチェック
+  local -a changes=()
+  if [ "$default_perms" != "$current_perms" ]; then
+    changes+=("default: $current_perms → $default_perms")
+  fi
+  if [ "$can_approve" != "$current_approve" ]; then
+    changes+=("can_approve: $current_approve → $can_approve")
+  fi
+
+  # 変更がない場合はスキップ
+  if [ ${#changes[@]} -eq 0 ]; then
+    log_verbose "workflow_permissions: 変更なし"
+    return
+  fi
+
   if [ "$DRY_RUN" = true ]; then
-    log "    [DRY-RUN] workflow_permissions ($mode)"
-    md_log "  - **workflow_permissions** ($mode): default=$default_perms, can_approve=$can_approve"
+    log "    [DRY-RUN] workflow_permissions ($mode): ${changes[*]}"
+    md_log_change "  - **workflow_permissions** ($mode): ${changes[*]}"
     return
   fi
 
@@ -383,18 +449,30 @@ apply_actions_variables() {
   for key in $(echo "$values" | jq -r 'keys[]'); do
     local value=$(echo "$values" | jq -r ".[\"$key\"]")
 
-    if [ "$DRY_RUN" = true ]; then
-      log "    [DRY-RUN] actions_variables: $key=$value"
-      md_log "  - **actions_variables** ($mode): $key=$value"
-      continue
-    fi
+    # 現在の変数を取得
+    local current_var
+    current_var=$(gh_api "/repos/$owner/$repo/actions/variables/$key" 2>/dev/null) || current_var=""
 
-    # 変数が存在するかチェック
-    if gh_api "/repos/$owner/$repo/actions/variables/$key" > /dev/null 2>&1; then
+    if [ -n "$current_var" ]; then
+      # 変数が存在する場合
+      local current_value=$(echo "$current_var" | jq -r '.value // ""')
+
+      if [ "$value" = "$current_value" ]; then
+        log_verbose "actions_variables: $key は既に同じ値"
+        continue
+      fi
+
       if [ "$mode" = "insert" ]; then
         log_verbose "actions_variables: $key は既に存在、スキップ"
         continue
       fi
+
+      if [ "$DRY_RUN" = true ]; then
+        log "    [DRY-RUN] actions_variables: $key=$value (現在: $current_value)"
+        md_log_change "  - **actions_variables** ($mode): $key: $current_value → $value"
+        continue
+      fi
+
       # 更新
       gh_api -X PATCH "/repos/$owner/$repo/actions/variables/$key" \
         -f value="$value" > /dev/null 2>&1 || {
@@ -403,6 +481,13 @@ apply_actions_variables() {
         }
       log "    actions_variables: $key を更新"
     else
+      # 変数が存在しない場合
+      if [ "$DRY_RUN" = true ]; then
+        log "    [DRY-RUN] actions_variables: $key=$value (新規作成)"
+        md_log_change "  - **actions_variables** ($mode): $key=$value (新規)"
+        continue
+      fi
+
       # 作成
       gh_api -X POST "/repos/$owner/$repo/actions/variables" \
         -f name="$key" \
@@ -536,13 +621,12 @@ apply_rulesets() {
 
     if [ "$status_checks" = "[]" ]; then
       log "    rulesets: PR ワークフローなし、作成スキップ"
-      md_log "  - **rulesets**: PR ワークフローなし、スキップ"
       return
     fi
 
     if [ "$DRY_RUN" = true ]; then
       log "    [DRY-RUN] rulesets (create): $(echo "$status_checks" | jq -c '[.[].context]')"
-      md_log "  - **rulesets** (create): $(echo "$status_checks" | jq -r '[.[].context] | join(", ")')"
+      md_log_change "  - **rulesets** (create): $(echo "$status_checks" | jq -r '[.[].context] | join(", ")')"
       return
     fi
 
@@ -651,10 +735,10 @@ apply_copilot_code_review() {
     if [ "$DRY_RUN" = true ]; then
       if [ "$has_copilot" = "0" ]; then
         log "    [DRY-RUN] copilot_code_review [$ruleset_name]: 追加"
-        md_log "  - **copilot_code_review** [$ruleset_name]: 追加予定"
+        md_log_change "  - **copilot_code_review** [$ruleset_name]: 追加予定"
       else
         log "    [DRY-RUN] copilot_code_review [$ruleset_name]: 更新"
-        md_log "  - **copilot_code_review** [$ruleset_name]: 更新予定"
+        md_log_change "  - **copilot_code_review** [$ruleset_name]: 更新予定"
       fi
       continue
     fi
@@ -792,14 +876,13 @@ for owner in "${TARGETS[@]}"; do
       fi
     done
 
-    # Markdown出力用
-    if [ "$OUTPUT_FORMAT" = "markdown" ] && [ "$DRY_RUN" = true ]; then
-      md_log "#### $repo_full_name"
-      if [ -n "$matched_rules" ]; then
-        md_log "> 適用ルール: $matched_rules"
-      fi
-      md_log ""
+    # Markdown出力用のヘッダーを設定（変更がある場合のみ出力される）
+    REPO_HEADER="#### $repo_full_name"
+    if [ -n "$matched_rules" ]; then
+      REPO_HEADER+=$'\n'"> 適用ルール: $matched_rules"
     fi
+    REPO_HEADER+=$'\n'
+    REPO_HEADER_OUTPUT=false
 
     # 各設定を適用
     apply_repo_settings "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.repo_settings // {}')"
@@ -808,7 +891,10 @@ for owner in "${TARGETS[@]}"; do
     apply_rulesets "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.rulesets // {}')"
     apply_copilot_code_review "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.copilot_code_review // {}')"
 
-    md_log ""
+    # 変更があった場合のみ空行を追加
+    if [ "$REPO_HEADER_OUTPUT" = true ]; then
+      md_log ""
+    fi
   done < <(echo "$repos_json" | jq -c '.[]')
 done
 
