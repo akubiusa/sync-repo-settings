@@ -33,12 +33,13 @@ jobs:
         run: |
           chmod +x ./apply-settings.sh
 
-          ARGS=""
+          # 引数を配列として構築（空白対応）
+          ARGS=()
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            ARGS="$ARGS --dry-run"
+            ARGS+=("--dry-run")
           fi
           if [ -n "${{ inputs.target }}" ]; then
-            ARGS="$ARGS --target ${{ inputs.target }}"
+            ARGS+=("--target" "${{ inputs.target }}")
           fi
 
-          ./apply-settings.sh $ARGS
+          ./apply-settings.sh "${ARGS[@]}"

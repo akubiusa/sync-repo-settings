@@ -243,7 +243,17 @@ check_has_pr_workflow() {
   fi
 
   for wf in $workflows; do
-    local content=$(gh_api "/repos/$owner/$repo/contents/.github/workflows/$wf" 2>/dev/null | jq -r '.content' | base64 -d 2>/dev/null) || continue
+    # ワークフローファイルの内容を取得（配列の場合はスキップ）
+    local file_response
+    file_response=$(gh_api "/repos/$owner/$repo/contents/.github/workflows/$wf" 2>/dev/null) || continue
+
+    # レスポンスがオブジェクトで content フィールドを持つか確認
+    if ! echo "$file_response" | jq -e 'type == "object" and has("content")' > /dev/null 2>&1; then
+      continue
+    fi
+
+    local content
+    content=$(echo "$file_response" | jq -r '.content' | base64 -d 2>/dev/null) || continue
     if echo "$content" | grep -qE '^\s*(pull_request|pull_request_target):'; then
       echo "true"
       return
@@ -306,16 +316,17 @@ apply_repo_settings() {
     return
   fi
 
-  # API呼び出し用のパラメータを構築
-  local params=""
+  # API呼び出し用のパラメータを配列として構築（コマンドインジェクション対策）
+  local -a params=()
   for key in $(echo "$values" | jq -r 'keys[]'); do
-    local value=$(echo "$values" | jq -r ".[\"$key\"]")
-    params="$params -f $key=$value"
+    local value
+    value=$(echo "$values" | jq -r ".[\"$key\"]")
+    params+=("-f" "$key=$value")
   done
 
-  if [ -n "$params" ]; then
-    eval "gh_api -X PATCH \"/repos/$owner/$repo\" $params" > /dev/null 2>&1 || {
-      log "    repo_settings: エラー"
+  if [ ${#params[@]} -gt 0 ]; then
+    gh_api -X PATCH "/repos/$owner/$repo" "${params[@]}" > /dev/null 2>&1 || {
+      log "    repo_settings: error"
       return 1
     }
     log "    repo_settings: 完了"
@@ -348,7 +359,7 @@ apply_workflow_permissions() {
   gh_api -X PUT "/repos/$owner/$repo/actions/permissions/workflow" \
     -f default_workflow_permissions="$default_perms" \
     -F can_approve_pull_request_reviews="$can_approve" > /dev/null 2>&1 || {
-      log "    workflow_permissions: エラー"
+      log "    workflow_permissions: error"
       return 1
     }
   log "    workflow_permissions: 完了"
@@ -387,7 +398,7 @@ apply_actions_variables() {
       # 更新
       gh_api -X PATCH "/repos/$owner/$repo/actions/variables/$key" \
         -f value="$value" > /dev/null 2>&1 || {
-          log "    actions_variables ($key): 更新エラー"
+          log "    actions_variables ($key): update error"
           continue
         }
       log "    actions_variables: $key を更新"
@@ -396,7 +407,7 @@ apply_actions_variables() {
       gh_api -X POST "/repos/$owner/$repo/actions/variables" \
         -f name="$key" \
         -f value="$value" > /dev/null 2>&1 || {
-          log "    actions_variables ($key): 作成エラー"
+          log "    actions_variables ($key): creation error"
           continue
         }
       log "    actions_variables: $key を作成"
@@ -426,7 +437,17 @@ detect_status_checks() {
   local status_checks="[]"
 
   for wf in $workflows; do
-    local content=$(gh_api "/repos/$owner/$repo/contents/.github/workflows/$wf" 2>/dev/null | jq -r '.content' | base64 -d 2>/dev/null) || continue
+    # ワークフローファイルの内容を取得（配列の場合はスキップ）
+    local file_response
+    file_response=$(gh_api "/repos/$owner/$repo/contents/.github/workflows/$wf" 2>/dev/null) || continue
+
+    # レスポンスがオブジェクトで content フィールドを持つか確認
+    if ! echo "$file_response" | jq -e 'type == "object" and has("content")' > /dev/null 2>&1; then
+      continue
+    fi
+
+    local content
+    content=$(echo "$file_response" | jq -r '.content' | base64 -d 2>/dev/null) || continue
 
     # PR トリガーがあるか確認
     if ! echo "$content" | grep -qE '^\s*(pull_request|pull_request_target):'; then
@@ -556,7 +577,7 @@ apply_rulesets() {
       }')
 
     local result=$(echo "$payload" | gh_api -X POST "/repos/$owner/$repo/rulesets" --input - 2>&1) || {
-      log "    rulesets: 作成エラー"
+      log "    rulesets: creation error"
       return 1
     }
 
@@ -658,7 +679,7 @@ apply_copilot_code_review() {
     }')
 
     echo "$update_payload" | gh_api -X PUT "/repos/$owner/$repo/rulesets/$ruleset_id" --input - > /dev/null 2>&1 || {
-      log "    copilot_code_review [$ruleset_name]: 更新エラー"
+      log "    copilot_code_review [$ruleset_name]: update error"
       continue
     }
 
@@ -676,7 +697,7 @@ apply_copilot_code_review() {
 
 # 設定ファイルを読み込み
 if [ ! -f "$CONFIG_FILE" ]; then
-  log "エラー: 設定ファイルが見つかりません: $CONFIG_FILE"
+  log "Error: Config file not found: $CONFIG_FILE"
   exit 1
 fi
 
@@ -715,7 +736,7 @@ for owner in "${TARGETS[@]}"; do
 
   # ユーザーかオーガニゼーションかを判定
   owner_type=$(gh_api "users/${owner}" 2>/dev/null | jq -r '.type') || {
-    log "エラー: $owner が見つかりません"
+    log "Error: Owner not found: $owner"
     continue
   }
 
@@ -727,7 +748,7 @@ for owner in "${TARGETS[@]}"; do
 
   # リポジトリ一覧を取得
   repos_json=$(gh_api --paginate "$repos_url" 2>/dev/null) || {
-    log "エラー: リポジトリ一覧の取得に失敗"
+    log "Error: Failed to fetch repository list"
     continue
   }
 
