@@ -585,16 +585,17 @@ apply_copilot_code_review() {
   local review_draft=$(echo "$values" | jq -r '.review_draft_pull_requests // true')
 
   # 既存のルールセットを取得
-  local rulesets=$(gh_api "/repos/$owner/$repo/rulesets" 2>/dev/null) || {
+  local rulesets
+  rulesets=$(gh_api "/repos/$owner/$repo/rulesets" 2>/dev/null) || {
     log_verbose "copilot_code_review: ルールセット取得エラー"
     return
   }
 
   # レスポンスが配列かどうかを確認（エラーレスポンスの場合はオブジェクト）
-  local is_array=$(echo "$rulesets" | jq -e 'type == "array"' 2>/dev/null) || {
+  if ! echo "$rulesets" | jq -e 'type == "array"' > /dev/null 2>&1; then
     log_verbose "copilot_code_review: ルールセット取得エラー（無効なレスポンス）"
     return
-  }
+  fi
 
   local ruleset_count=$(echo "$rulesets" | jq 'length')
 
