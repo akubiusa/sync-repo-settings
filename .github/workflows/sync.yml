@@ -1,0 +1,44 @@
+name: Sync Repository Settings
+
+on:
+  schedule:
+    # 毎日 AM 9:00 JST (UTC 0:00)
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: '特定のオーナーのみ処理（空欄で全ターゲット）'
+        required: false
+        type: string
+      dry_run:
+        description: 'ドライラン（実際には適用しない）'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup GitHub CLI
+        run: |
+          gh --version
+
+      - name: Run apply-settings
+        env:
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        run: |
+          chmod +x ./apply-settings.sh
+
+          ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ -n "${{ inputs.target }}" ]; then
+            ARGS="$ARGS --target ${{ inputs.target }}"
+          fi
+
+          ./apply-settings.sh $ARGS
