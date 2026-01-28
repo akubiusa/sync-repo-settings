@@ -251,7 +251,67 @@ decode_base64() {
   fi
 }
 
-# PR ワークフローがあるかチェック
+# 必ず動作する PR トリガーか判定
+workflow_has_required_pr_trigger() {
+  python3 - <<'PY'
+import sys
+import yaml
+
+content = sys.stdin.read()
+
+try:
+    data = yaml.safe_load(content) or {}
+except Exception:
+    print("false")
+    sys.exit(0)
+
+def get_on_value(payload):
+    if "on" in payload:
+        return payload["on"]
+    # PyYAML が on を boolean として解釈する場合に備える
+    if True in payload:
+        return payload[True]
+    return None
+
+def normalize_list(value):
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        return [value]
+    return []
+
+on_value = get_on_value(data)
+
+def has_required_event(event_name):
+    if on_value is None:
+        return False
+    if isinstance(on_value, str):
+        return on_value == event_name
+    if isinstance(on_value, list):
+        return event_name in on_value
+    if isinstance(on_value, dict):
+        if event_name not in on_value:
+            return False
+        conf = on_value.get(event_name)
+        if conf is None:
+            return True
+        if isinstance(conf, list):
+            return "synchronize" in normalize_list(conf)
+        if isinstance(conf, dict):
+            types = conf.get("types")
+            if types is not None:
+                if "synchronize" not in normalize_list(types):
+                    return False
+            return True
+        return True
+    return False
+
+ok = has_required_event("pull_request") or has_required_event("pull_request_target")
+print("true" if ok else "false")
+PY
+}
+
+# 必ず動作する PR ワークフローがあるかチェック
 check_has_pr_workflow() {
   local owner="$1"
   local repo="$2"
@@ -282,8 +342,7 @@ check_has_pr_workflow() {
 
     local content
     content=$(echo "$file_response" | jq -r '.content' | decode_base64 2>/dev/null) || continue
-    # block-style (pull_request:) と flow-style (on: [pull_request]) の両方に対応
-    if echo "$content" | grep -qE '(^\s*(pull_request|pull_request_target):)|(^\s*on:\s*\[.*\bpull_request(_target)?\b.*\])'; then
+    if [ "$(workflow_has_required_pr_trigger <<< "$content")" = "true" ]; then
       echo "true"
       return
     fi
@@ -558,8 +617,8 @@ detect_status_checks() {
     local content
     content=$(echo "$file_response" | jq -r '.content' | decode_base64 2>/dev/null) || continue
 
-    # PR トリガーがあるか確認（block-style と flow-style の両方に対応）
-    if ! echo "$content" | grep -qE '(^\s*(pull_request|pull_request_target):)|(^\s*on:\s*\[.*\bpull_request(_target)?\b.*\])'; then
+    # 必ず動作する PR トリガーか確認
+    if [ "$(workflow_has_required_pr_trigger <<< "$content")" != "true" ]; then
       continue
     fi
 
