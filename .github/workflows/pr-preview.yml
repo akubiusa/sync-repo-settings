@@ -4,9 +4,6 @@ on:
   pull_request_target:
     branches:
       - master
-    paths:
-      - 'config.json'
-      - 'apply-settings.sh'
 
 jobs:
   preview:
