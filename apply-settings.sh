@@ -273,6 +273,107 @@ decode_base64() {
   fi
 }
 
+# PR トリガーが常時実行されるかチェック
+# PR のライフサイクル全体（作成・更新・再開）で実行される必要がある
+check_pr_trigger_always_runs() {
+  local content="$1"
+
+  # awk で YAML を解析（必ず exit 0 で終了）
+  local result
+  result=$(echo "$content" | awk '
+    function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
+    function strip_comment(s) { sub(/#.*/, "", s); return s }
+
+    BEGIN {
+      in_on=0; on_i=-1
+      in_pr=0; pr_i=-1
+      in_types=0; types_i=-1
+      found_pr=0; found_types=0
+      has_opened=0; has_reopened=0; has_sync=0
+      has_filters=0
+    }
+
+    {
+      line = strip_comment($0)
+      if (line ~ /^[ \t]*$/) next
+      i = indent(line)
+
+      # flow-style on: [pull_request, ...] の検出
+      if (line ~ /^[ \t]*on:[ \t]*\[/) {
+        if (line ~ /(^|[^a-z_])(pull_request|pull_request_target)([^a-z_]|$)/) {
+          print "true"; exit 0
+        }
+        next
+      }
+
+      # scalar での on: pull_request の検出
+      if (line ~ /^[ \t]*on:[ \t]*(pull_request|pull_request_target)[ \t]*$/) {
+        print "true"; exit 0
+      }
+
+      # on: ブロック開始判定
+      if (line ~ /^[ \t]*on:[ \t]*$/) { in_on=1; on_i=i; in_pr=0; in_types=0; next }
+
+      # on: ブロック終了判定
+      if (in_on && i <= on_i) { in_on=0; in_pr=0; in_types=0 }
+      if (!in_on) next
+
+      # pull_request キー検出
+      if (line ~ /^[ \t]*(pull_request|pull_request_target)[ \t]*:/) {
+        found_pr=1; in_pr=1; pr_i=i; in_types=0
+        if (line ~ /types[ \t]*:/) found_types=1
+        if (line ~ /(^|[^a-z_])opened([^a-z_]|$)/) has_opened=1
+        if (line ~ /(^|[^a-z_])reopened([^a-z_]|$)/) has_reopened=1
+        if (line ~ /(^|[^a-z_])synchronize([^a-z_]|$)/) has_sync=1
+        if (line ~ /(paths|paths-ignore|branches|branches-ignore)[ \t]*:/) has_filters=1
+        next
+      }
+
+      # pull_request ブロック終了
+      if (in_pr && i <= pr_i) { in_pr=0; in_types=0 }
+      if (!in_pr) next
+
+      # paths/branches フィルター判定
+      if (line ~ /^[ \t]*(paths|paths-ignore|branches|branches-ignore)[ \t]*:/) {
+        has_filters=1
+      }
+
+      # types 配列の検出と opened/reopened/synchronize 判定
+      if (line ~ /^[ \t]*types:[ \t]*\[/) {
+        found_types=1
+        if (line ~ /(^|[^a-z_])opened([^a-z_]|$)/) has_opened=1
+        if (line ~ /(^|[^a-z_])reopened([^a-z_]|$)/) has_reopened=1
+        if (line ~ /(^|[^a-z_])synchronize([^a-z_]|$)/) has_sync=1
+        next
+      }
+      if (line ~ /^[ \t]*types:[ \t]*$/) {
+        found_types=1; in_types=1; types_i=i; next
+      }
+      if (in_types) {
+        if (i <= types_i) { in_types=0 }
+        else {
+          if (line ~ /^[ \t]*-[ \t]*(opened)[ \t]*$/) has_opened=1
+          if (line ~ /^[ \t]*-[ \t]*(reopened)[ \t]*$/) has_reopened=1
+          if (line ~ /^[ \t]*-[ \t]*(synchronize)[ \t]*$/) has_sync=1
+        }
+      }
+    }
+
+    END {
+      if (!found_pr) { print "false"; exit 0 }
+      if (has_filters) { print "false"; exit 0 }
+      # types 未指定の場合、デフォルトで opened, reopened, synchronize が有効
+      if (!found_types) { print "true"; exit 0 }
+      # types が指定されている場合、3つすべてが必要
+      if (has_opened && has_reopened && has_sync) { print "true"; exit 0 }
+      print "false"
+      exit 0
+    }
+  ')
+
+  echo "$result"
+}
+
 # PR ワークフローがあるかチェック
 check_has_pr_workflow() {
   local owner="$1"
@@ -304,8 +405,8 @@ check_has_pr_workflow() {
 
     local content
     content=$(echo "$file_response" | jq -r '.content' | decode_base64 2>/dev/null) || continue
-    # block-style (pull_request:) と flow-style (on: [pull_request]) の両方に対応
-    if echo "$content" | grep -qE '(^\s*(pull_request|pull_request_target):)|(^\s*on:\s*\[.*\bpull_request(_target)?\b.*\])'; then
+    # PR トリガーが常時実行されるかチェック
+    if [ "$(check_pr_trigger_always_runs "$content")" = "true" ]; then
       echo "true"
       return
     fi
@@ -601,29 +702,9 @@ detect_status_checks() {
     local content
     content=$(echo "$file_response" | jq -r '.content' | decode_base64 2>/dev/null) || continue
 
-    # PR トリガーがあるか確認（block-style と flow-style の両方に対応）
-    if ! echo "$content" | grep -qE '(^\s*(pull_request|pull_request_target):)|(^\s*on:\s*\[.*\bpull_request(_target)?\b.*\])'; then
+    # PR トリガーが常時実行されるかチェック
+    if [ "$(check_pr_trigger_always_runs "$content")" != "true" ]; then
       continue
-    fi
-
-    # paths 条件があるワークフローは除外（特定ファイル変更時のみ実行されるため）
-    # ただし、pull_request_target も存在する場合は除外しない
-    # （pull_request_target は paths 条件に関係なく実行される）
-    if echo "$content" | grep -qE '^\s+paths:' && \
-       ! echo "$content" | grep -qE '^\s*pull_request_target:'; then
-      continue
-    fi
-
-    # pull_request_target で types: [closed] のみのワークフローは除外
-    # PR クローズ時のみ実行されるため、必須チェックとしては不適切
-    if echo "$content" | grep -qE '^\s*pull_request_target:' && \
-       ! echo "$content" | grep -qE '^\s*pull_request:'; then
-      # pull_request_target のみの場合、types を確認
-      # types に closed があり、opened/synchronize/reopened がない場合はスキップ
-      if echo "$content" | grep -qE '^\s+-\s*closed' && \
-         ! echo "$content" | grep -qE '^\s+-\s*(opened|synchronize|reopened)'; then
-        continue
-      fi
     fi
 
     # ワークフロー名を取得
