@@ -319,7 +319,7 @@ check_pr_trigger_always_runs() {
       if (!in_on) next
 
       # pull_request_target キー検出（pull_request より先にチェック）
-      if (line ~ /^[ \t]*pull_request_target:/) {
+      if (line ~ /^[ \t]*pull_request_target[ \t]*:/) {
         found_pr="pull_request_target"; in_pr=1; pr_i=i; in_types=0
         if (line ~ /types[ \t]*:/) found_types=1
         if (line ~ /(^|[^a-z_])opened([^a-z_]|$)/) has_opened=1
@@ -329,8 +329,8 @@ check_pr_trigger_always_runs() {
         if (line ~ /(paths|paths-ignore|branches|branches-ignore)[ \t]*:/) has_filters=1
         next
       }
-      # pull_request キー検出
-      if (line ~ /^[ \t]*pull_request:/) {
+      # pull_request キー検出（_target を除外）
+      if (line ~ /^[ \t]*pull_request[ \t]*:/ && line !~ /_target/) {
         found_pr="pull_request"; in_pr=1; pr_i=i; in_types=0
         if (line ~ /types[ \t]*:/) found_types=1
         if (line ~ /(^|[^a-z_])opened([^a-z_]|$)/) has_opened=1
