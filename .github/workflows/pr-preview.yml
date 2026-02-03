@@ -6,16 +6,13 @@ on:
       - master
 
 jobs:
-  preview:
+  post-approval-request:
     runs-on: ubuntu-latest
-    # pull_request_target（フォーク）の場合は Environment で承認が必要
-    environment: ${{ github.event_name == 'pull_request_target' && 'pr-preview' || null }}
+    if: github.event_name == 'pull_request_target'
     permissions:
-      contents: read
       pull-requests: write
     steps:
       - name: Post approval request comment
-        if: github.event_name == 'pull_request_target'
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -26,6 +23,14 @@ jobs:
 
             [Actions run を確認して承認してください](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}?pr=${{ github.event.pull_request.number }})
 
+  preview:
+    runs-on: ubuntu-latest
+    needs: post-approval-request
+    # pull_request_target（フォーク）の場合は Environment で承認が必要
+    environment: ${{ github.event_name == 'pull_request_target' && 'pr-preview' || null }}
+    permissions:
+      contents: read
+    steps:
       - name: Checkout PR code
         uses: actions/checkout@v4
         with:
