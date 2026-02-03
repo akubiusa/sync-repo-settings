@@ -15,7 +15,20 @@ jobs:
     environment: ${{ github.event_name == 'pull_request_target' && 'pr-preview' || null }}
     permissions:
       contents: read
+      pull-requests: write
     steps:
+      - name: Post approval request comment
+        if: github.event_name == 'pull_request_target'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ## Environment 承認待ち
+
+            この PR の dry-run を実行するには、Environment `pr-preview` の承認が必要です。
+
+            [Actions run を確認して承認してください](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}?pr=${{ github.event.pull_request.number }})
+
       - name: Checkout PR code
         uses: actions/checkout@v4
         with:
