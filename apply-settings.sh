@@ -273,6 +273,30 @@ decode_base64() {
   fi
 }
 
+# PR トリガーが常時実行されるかチェック
+# PR のライフサイクル全体（作成・更新・再開）で実行される必要がある
+check_pr_trigger_always_runs() {
+  local content="$1"
+
+  # スクリプトと同じディレクトリにある awk ファイルを使用
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local awk_file="${script_dir}/check-pr-trigger.awk"
+
+  # awk ファイルが存在しない場合はエラー
+  if [ ! -f "$awk_file" ]; then
+    echo "Error: $awk_file not found" >&2
+    echo "false"
+    return 1
+  fi
+
+  # 外部 awk スクリプトを使用して YAML を解析
+  local result
+  result=$(echo "$content" | awk -f "$awk_file")
+
+  echo "$result"
+}
+
 # PR ワークフローがあるかチェック
 check_has_pr_workflow() {
   local owner="$1"
@@ -304,8 +328,8 @@ check_has_pr_workflow() {
 
     local content
     content=$(echo "$file_response" | jq -r '.content' | decode_base64 2>/dev/null) || continue
-    # block-style (pull_request:) と flow-style (on: [pull_request]) の両方に対応
-    if echo "$content" | grep -qE '(^\s*(pull_request|pull_request_target):)|(^\s*on:\s*\[.*\bpull_request(_target)?\b.*\])'; then
+    # PR トリガーが常時実行されるかチェック
+    if [ "$(check_pr_trigger_always_runs "$content")" = "true" ]; then
       echo "true"
       return
     fi
@@ -601,29 +625,9 @@ detect_status_checks() {
     local content
     content=$(echo "$file_response" | jq -r '.content' | decode_base64 2>/dev/null) || continue
 
-    # PR トリガーがあるか確認（block-style と flow-style の両方に対応）
-    if ! echo "$content" | grep -qE '(^\s*(pull_request|pull_request_target):)|(^\s*on:\s*\[.*\bpull_request(_target)?\b.*\])'; then
+    # PR トリガーが常時実行されるかチェック
+    if [ "$(check_pr_trigger_always_runs "$content")" != "true" ]; then
       continue
-    fi
-
-    # paths 条件があるワークフローは除外（特定ファイル変更時のみ実行されるため）
-    # ただし、pull_request_target も存在する場合は除外しない
-    # （pull_request_target は paths 条件に関係なく実行される）
-    if echo "$content" | grep -qE '^\s+paths:' && \
-       ! echo "$content" | grep -qE '^\s*pull_request_target:'; then
-      continue
-    fi
-
-    # pull_request_target で types: [closed] のみのワークフローは除外
-    # PR クローズ時のみ実行されるため、必須チェックとしては不適切
-    if echo "$content" | grep -qE '^\s*pull_request_target:' && \
-       ! echo "$content" | grep -qE '^\s*pull_request:'; then
-      # pull_request_target のみの場合、types を確認
-      # types に closed があり、opened/synchronize/reopened がない場合はスキップ
-      if echo "$content" | grep -qE '^\s+-\s*closed' && \
-         ! echo "$content" | grep -qE '^\s+-\s*(opened|synchronize|reopened)'; then
-        continue
-      fi
     fi
 
     # ワークフロー名を取得
