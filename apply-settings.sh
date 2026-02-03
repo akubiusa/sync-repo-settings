@@ -288,7 +288,7 @@ check_pr_trigger_always_runs() {
       in_on=0; on_i=-1
       in_pr=0; pr_i=-1
       in_types=0; types_i=-1
-      found_pr=0; found_types=0
+      found_pr=""; found_types=0
       has_opened=0; has_reopened=0; has_sync=0
       has_filters=0
     }
@@ -318,9 +318,20 @@ check_pr_trigger_always_runs() {
       if (in_on && i <= on_i) { in_on=0; in_pr=0; in_types=0 }
       if (!in_on) next
 
+      # pull_request_target キー検出（pull_request より先にチェック）
+      if (line ~ /^[ \t]*pull_request_target:/) {
+        found_pr="pull_request_target"; in_pr=1; pr_i=i; in_types=0
+        if (line ~ /types[ \t]*:/) found_types=1
+        if (line ~ /(^|[^a-z_])opened([^a-z_]|$)/) has_opened=1
+        if (line ~ /(^|[^a-z_])reopened([^a-z_]|$)/) has_reopened=1
+        if (line ~ /(^|[^a-z_])synchronize([^a-z_]|$)/) has_sync=1
+        # pull_request_target では paths/branches フィルターは記録するが無視される
+        if (line ~ /(paths|paths-ignore|branches|branches-ignore)[ \t]*:/) has_filters=1
+        next
+      }
       # pull_request キー検出
-      if (line ~ /^[ \t]*(pull_request|pull_request_target)[ \t]*:/) {
-        found_pr=1; in_pr=1; pr_i=i; in_types=0
+      if (line ~ /^[ \t]*pull_request:/) {
+        found_pr="pull_request"; in_pr=1; pr_i=i; in_types=0
         if (line ~ /types[ \t]*:/) found_types=1
         if (line ~ /(^|[^a-z_])opened([^a-z_]|$)/) has_opened=1
         if (line ~ /(^|[^a-z_])reopened([^a-z_]|$)/) has_reopened=1
@@ -360,8 +371,10 @@ check_pr_trigger_always_runs() {
     }
 
     END {
-      if (!found_pr) { print "false"; exit 0 }
-      if (has_filters) { print "false"; exit 0 }
+      if (found_pr == "") { print "false"; exit 0 }
+      # pull_request の場合のみ paths/branches フィルターをチェック
+      # pull_request_target では paths/branches フィルターは無視される
+      if (found_pr == "pull_request" && has_filters) { print "false"; exit 0 }
       # types 未指定の場合、デフォルトで opened, reopened, synchronize が有効
       if (!found_types) { print "true"; exit 0 }
       # types が指定されている場合、3つすべてが必要
