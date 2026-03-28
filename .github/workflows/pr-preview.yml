@@ -18,7 +18,7 @@ jobs:
   preview:
     runs-on: ubuntu-latest
     # pull_request_target（フォーク）の場合は Environment で承認が必要
-    environment: ${{ github.event_name == 'pull_request_target' && 'pr-preview' || null }}
+    environment: ${{ github.event_name == 'pull_request_target' && 'pr-preview' || '' }}
     permissions:
       contents: read
     steps:
