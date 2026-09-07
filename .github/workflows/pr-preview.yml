@@ -36,6 +36,11 @@ jobs:
         with:
           # pull_request_target の場合は PR の HEAD をチェックアウト
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.ref }}
+          # actions/checkout はフォーク PR の HEAD SHA チェックアウトを既定で拒否するため、
+          # Environment 'pr-preview' の承認を経たフォーク PR に限り明示的に許可する
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository }}
+          # フォーク PR （信頼できないコード）をチェックアウトする際は認証情報を残さない
+          persist-credentials: ${{ !(github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository) }}
 
       - name: Run dry-run
         id: dry-run
