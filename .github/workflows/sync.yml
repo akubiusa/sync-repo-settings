@@ -2,16 +2,16 @@ name: Sync Repository Settings
 
 on:
   schedule:
-    # 毎時0分
+    # Every hour, on the hour
     - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
       target:
-        description: '特定のオーナーのみ処理（空欄で全ターゲット）'
+        description: 'Process only the given owner (empty for all targets)'
         required: false
         type: string
       dry_run:
-        description: 'ドライラン（実際には適用しない）'
+        description: 'Dry run (do not apply anything)'
         required: false
         type: boolean
         default: false
@@ -33,7 +33,7 @@ jobs:
         run: |
           chmod +x ./apply-settings.sh
 
-          # 引数を配列として構築（空白対応）
+          # Build the arguments as an array (whitespace-safe)
           ARGS=()
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             ARGS+=("--dry-run")

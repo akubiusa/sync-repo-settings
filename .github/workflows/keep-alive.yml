@@ -1,18 +1,18 @@
 name: Keep Alive
 
-# GitHub Actions は 60 日間リポジトリへのアクティビティがないと
-# スケジュールワークフローを自動的に無効化する。
-# このワークフローは対象ワークフローの有効化 API を定期的に呼び出すことで、
-# 無効化される前に無効化期限を延長し続ける（すでに有効な状態で呼び出しても
-# 期限は延長される）。無効化されるのを待って再有効化するわけではない。
-# 参考: https://gooner.hateblo.jp/entry/2025/02/27/163322
+# GitHub Actions automatically disables scheduled workflows after 60 days
+# without repository activity. This workflow periodically calls the enable API
+# for the target workflows, which keeps pushing the disable deadline back before
+# it is reached (calling it on an already enabled workflow still extends the
+# deadline).
+# Reference (Japanese): https://gooner.hateblo.jp/entry/2025/02/27/163322
 #
-# 対象には本ワークフロー自身も含めているため、実行が継続する限り
-# 自己再開不能な無効化には陥らない。
+# This workflow targets itself as well, so as long as it keeps running it
+# cannot fall into a disabled state it could not recover from.
 
 on:
   schedule:
-    # 毎月 1 日・15 日 AM 9:00 JST (UTC 0:00) に実行
+    # Runs on the 1st and 15th of every month at 09:00 JST (00:00 UTC)
     - cron: '0 0 1,15 * *'
   workflow_dispatch:
 
@@ -24,15 +24,13 @@ jobs:
       actions: write
 
     steps:
-      - name: 対象ワークフローを有効化して無効化期限を延長
+      - name: Enable the target workflows to extend the disable deadline
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          # 無効化期限を延長する対象ワークフロー（ファイル名で指定）
-          # ワークフロー ID の代わりにファイル名を渡せるため、
-          # 一覧取得・絞り込みが不要になる
+          # Workflow file names (the enable API accepts a file name in place of an ID)
           workflow_files=(
             "keep-alive.yml"
             "sync.yml"

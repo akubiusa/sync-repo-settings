@@ -17,16 +17,16 @@ jobs:
         with:
           issue-number: ${{ github.event.pull_request.number }}
           body: |
-            ## Environment 承認待ち
+            ## Waiting for Environment approval
 
-            この PR の dry-run を実行するには、Environment `pr-preview` の承認が必要です。
+            Running the dry-run for this PR requires approval of the `pr-preview` Environment.
 
-            [Actions run を確認して承認してください](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}?pr=${{ github.event.pull_request.number }})
+            [Review the Actions run and approve it](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}?pr=${{ github.event.pull_request.number }})
 
   preview:
     runs-on: ubuntu-latest
     needs: post-approval-request
-    # フォークからの PR の場合のみ Environment 'pr-preview' で承認が必要
+    # Only PRs from forks need approval through the 'pr-preview' Environment
     environment: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-preview' || '' }}
     permissions:
       contents: read
@@ -34,47 +34,47 @@ jobs:
       - name: Checkout PR code
         uses: actions/checkout@v4
         with:
-          # pull_request_target の場合は PR の HEAD をチェックアウト
+          # For pull_request_target, check out the PR HEAD
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.ref }}
-          # actions/checkout はフォーク PR の HEAD SHA チェックアウトを既定で拒否するため、
-          # Environment 'pr-preview' の承認を経たフォーク PR に限り明示的に許可する
+          # actions/checkout refuses to check out a fork PR's HEAD SHA by default,
+          # so allow it explicitly only for fork PRs approved through the 'pr-preview' Environment
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository }}
-          # フォーク PR （信頼できないコード）をチェックアウトする際は認証情報を残さない
+          # Do not persist credentials when checking out fork PRs (untrusted code)
           persist-credentials: ${{ !(github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository) }}
 
       - name: Run dry-run
         id: dry-run
         continue-on-error: true
         env:
-          # 注意: GITHUB_TOKEN は単一リポジトリにしかアクセスできないため、
-          # 複数リポジトリの設定を読み取る apply-settings.sh では使用できない
-          # PERSONAL_ACCESS_TOKEN を使用する必要がある
-          # ただし、フォークからの PR では PERSONAL_ACCESS_TOKEN にアクセスできないため、
-          # エラーメッセージを表示して終了する
+          # Note: GITHUB_TOKEN can only access a single repository, so it cannot be
+          # used by apply-settings.sh, which reads settings of many repositories.
+          # PERSONAL_ACCESS_TOKEN is required.
+          # With pull_request_target the PAT is also available to fork PRs; the only
+          # gate is the Environment approval. The empty-PAT check below only guards
+          # against a missing secret.
           GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
           chmod +x ./apply-settings.sh
 
-          # PAT が空の場合のエラー（通常は発生しない）
+          # Error when the PAT is empty (should not normally happen)
           if [ -z "$GH_TOKEN" ]; then
-            echo "## PERSONAL_ACCESS_TOKEN が設定されていません" > summary.txt
+            echo "## PERSONAL_ACCESS_TOKEN is not set" > summary.txt
             echo "" >> summary.txt
-            echo "Repository Secrets に PERSONAL_ACCESS_TOKEN を設定してください。" >> summary.txt
+            echo "Set PERSONAL_ACCESS_TOKEN in the repository secrets." >> summary.txt
             echo "" > details.txt
             exit 1
           fi
 
-          # dry-run を実行（stdout: Markdown サマリー、stderr: 詳細ログ）
+          # Run the dry-run (stdout: Markdown summary, stderr: detailed log)
           set +e +o pipefail
           ./apply-settings.sh --dry-run --markdown > summary.txt 2> details.txt
           exit_code=$?
           set -eo pipefail
 
-          # エラー時の処理
           if [ $exit_code -ne 0 ]; then
-            echo "## エラーが発生しました" > summary.txt
+            echo "## An error occurred" > summary.txt
             echo "" >> summary.txt
-            echo "終了コード: $exit_code" >> summary.txt
+            echo "Exit code: $exit_code" >> summary.txt
           fi
 
       - name: Ensure result files exist

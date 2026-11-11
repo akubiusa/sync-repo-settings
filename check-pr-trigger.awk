@@ -1,6 +1,6 @@
-# PR トリガーが常時実行されるかチェックする awk スクリプト
-# GitHub Actions の pull_request/pull_request_target トリガーを解析し、
-# PR のライフサイクル全体（opened, reopened, synchronize）で実行されるか判定
+# Awk script that checks whether a workflow's PR trigger always runs
+# Parses the pull_request/pull_request_target triggers of a GitHub Actions workflow and
+# decides whether it runs for the whole PR lifecycle (opened, reopened, synchronize).
 
 function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
 function strip_comment(s) { sub(/#.*/, "", s); return s }
@@ -12,8 +12,8 @@ BEGIN {
   found_pr=""; found_types=0
   has_opened=0; has_reopened=0; has_sync=0
   has_path_filters=0
-  always_runs=0  # どれか一つのトリガーが常時実行であれば 1
-  current_trigger=""  # 現在処理中のトリガー種別
+  always_runs=0  # 1 once any trigger always runs
+  current_trigger=""  # trigger type being processed
 }
 
 {
@@ -21,7 +21,7 @@ BEGIN {
   if (line ~ /^[ \t]*$/) next
   i = indent(line)
 
-  # flow-style on: [pull_request, ...] の検出
+  # Detect flow-style on: [pull_request, ...]
   if (line ~ /^[ \t]*on:[ \t]*\[/) {
     if (line ~ /(^|[^a-z_])(pull_request|pull_request_target)([^a-z_]|$)/) {
       print "true"; exit 0
@@ -29,20 +29,20 @@ BEGIN {
     next
   }
 
-  # scalar での on: pull_request の検出
+  # Detect scalar on: pull_request
   if (line ~ /^[ \t]*on:[ \t]*(pull_request|pull_request_target)[ \t]*$/) {
     print "true"; exit 0
   }
 
-  # on: ブロック開始判定
+  # Start of the on: block
   if (line ~ /^[ \t]*on:[ \t]*$/) { in_on=1; on_i=i; in_pr=0; in_types=0; next }
 
-  # on: ブロック終了判定
+  # End of the on: block
   if (in_on && i <= on_i) {
-    # on: ブロック終了時に、最後のトリガーブロックを評価
+    # At the end of the on: block, evaluate the last trigger block
     if (in_pr) {
       if (current_trigger == "pull_request" && has_path_filters) {
-        # pull_request で paths フィルターがある場合は常時実行ではない
+        # A paths filter on pull_request means it does not always run
       } else if (!found_types || (has_opened && has_reopened && has_sync)) {
         always_runs = 1
       }
@@ -51,17 +51,16 @@ BEGIN {
   }
   if (!in_on) next
 
-  # pull_request_target キー検出（pull_request より先にチェック）
+  # Detect the pull_request_target key (checked before pull_request)
   if (line ~ /^[ \t]*pull_request_target[ \t]*:/) {
-    # 前回のトリガーブロックの判定を行う
     if (in_pr) {
       if (current_trigger == "pull_request" && has_path_filters) {
-        # pull_request で paths フィルターがある場合は常時実行ではない
+        # A paths filter on pull_request means it does not always run
       } else if (!found_types || (has_opened && has_reopened && has_sync)) {
         always_runs = 1
       }
     }
-    # 新しいトリガーブロック開始：変数をリセット
+    # New trigger block: reset the state
     found_pr="pull_request_target"; current_trigger="pull_request_target"
     in_pr=1; pr_i=i; in_types=0
     found_types=0; has_opened=0; has_reopened=0; has_sync=0; has_path_filters=0
@@ -69,20 +68,19 @@ BEGIN {
     if (line ~ /(^|[^a-z_])opened([^a-z_]|$)/) has_opened=1
     if (line ~ /(^|[^a-z_])reopened([^a-z_]|$)/) has_reopened=1
     if (line ~ /(^|[^a-z_])synchronize([^a-z_]|$)/) has_sync=1
-    # pull_request_target では paths/branches フィルターは無視される
+    # paths/branches filters are ignored for pull_request_target
     next
   }
-  # pull_request キー検出（_target を除外）
+  # Detect the pull_request key (excluding _target)
   if (line ~ /^[ \t]*pull_request[ \t]*:/ && line !~ /_target/) {
-    # 前回のトリガーブロックの判定を行う
     if (in_pr) {
       if (current_trigger == "pull_request" && has_path_filters) {
-        # pull_request で paths フィルターがある場合は常時実行ではない
+        # A paths filter on pull_request means it does not always run
       } else if (!found_types || (has_opened && has_reopened && has_sync)) {
         always_runs = 1
       }
     }
-    # 新しいトリガーブロック開始：変数をリセット
+    # New trigger block: reset the state
     found_pr="pull_request"; current_trigger="pull_request"
     in_pr=1; pr_i=i; in_types=0
     found_types=0; has_opened=0; has_reopened=0; has_sync=0; has_path_filters=0
@@ -94,11 +92,10 @@ BEGIN {
     next
   }
 
-  # pull_request / pull_request_target ブロック終了
+  # End of the pull_request / pull_request_target block
   if (in_pr && i <= pr_i) {
-    # ブロック終了時に判定を行う
     if (current_trigger == "pull_request" && has_path_filters) {
-      # pull_request で paths フィルターがある場合は常時実行ではない
+      # A paths filter on pull_request means it does not always run
     } else if (!found_types || (has_opened && has_reopened && has_sync)) {
       always_runs = 1
     }
@@ -106,12 +103,12 @@ BEGIN {
   }
   if (!in_pr) next
 
-  # paths フィルター判定（branches/branches-ignore は除外判定に使わない）
+  # Detect paths filters (branches/branches-ignore are not used to decide exclusion)
   if (line ~ /^[ \t]*(paths|paths-ignore)[ \t]*:/) {
     has_path_filters=1
   }
 
-  # types 配列の検出と opened/reopened/synchronize 判定
+  # Detect a types array and whether it has opened/reopened/synchronize
   if (line ~ /^[ \t]*types:[ \t]*\[/) {
     found_types=1
     if (line ~ /(^|[^a-z_])opened([^a-z_]|$)/) has_opened=1
@@ -133,19 +130,18 @@ BEGIN {
 }
 
 END {
-  # PR トリガーが見つからなかった場合
+  # No PR trigger found
   if (found_pr == "") { print "false"; exit 0 }
 
-  # 最後のトリガーブロックが終了していない場合（ファイル終端）の判定
+  # Evaluate the last trigger block if it is still open (end of file)
   if (in_pr) {
     if (current_trigger == "pull_request" && has_path_filters) {
-      # pull_request で paths フィルターがある場合は常時実行ではない
+      # A paths filter on pull_request means it does not always run
     } else if (!found_types || (has_opened && has_reopened && has_sync)) {
       always_runs = 1
     }
   }
 
-  # どれか一つのトリガーが常時実行であれば true
   if (always_runs) { print "true"; exit 0 }
 
   print "false"
