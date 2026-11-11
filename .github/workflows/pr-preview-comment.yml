@@ -9,7 +9,7 @@ on:
 jobs:
   comment:
     runs-on: ubuntu-latest
-    # workflow_run は完了を待つため、失敗した場合もコメントを投稿
+    # workflow_run waits for completion, so a comment is posted on failure as well
     if: >
       github.event.workflow_run.event == 'pull_request_target' &&
       github.event.workflow_run.conclusion != 'cancelled'
@@ -29,25 +29,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          # PR 番号ファイルのパスを定義
           PR_NUMBER_FILE="pr-number/pr_number.txt"
 
-          # PR 番号ファイルの存在と中身をチェック
           if [ ! -s "$PR_NUMBER_FILE" ]; then
             echo "Error: PR number file '$PR_NUMBER_FILE' not found or is empty." >&2
             exit 1
           fi
 
-          # PR 番号を読み取り
           PR_NUMBER="$(cat "$PR_NUMBER_FILE")"
 
-          # PR 番号が空でないか確認
           if [ -z "$PR_NUMBER" ]; then
             echo "Error: PR number is empty." >&2
             exit 1
           fi
 
-          # PR 番号が数値であることを確認
           if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
             echo "Error: Invalid PR number '$PR_NUMBER'." >&2
             exit 1
@@ -69,9 +64,9 @@ jobs:
           else
             {
               echo 'summary<<EOF'
-              echo '## 結果の取得に失敗しました'
+              echo '## Failed to retrieve the results'
               echo ''
-              echo 'dry-run の結果が artifact に保存されていません。'
+              echo 'The dry-run results were not saved to the artifact.'
               echo 'EOF'
             } >> "$GITHUB_OUTPUT"
           fi
@@ -85,7 +80,7 @@ jobs:
           else
             {
               echo 'details<<EOF'
-              echo 'ログがありません。'
+              echo 'No log available.'
               echo 'EOF'
             } >> "$GITHUB_OUTPUT"
           fi
@@ -108,12 +103,12 @@ jobs:
             <!-- sync-repo-settings-preview -->
             # Dry-Run Preview
 
-            この PR がマージされた場合に適用される設定の一覧です。
+            Settings that will be applied when this PR is merged.
 
             ${{ steps.results.outputs.summary }}
 
             <details>
-            <summary>詳細ログを表示</summary>
+            <summary>Show detailed log</summary>
 
             ```
             ${{ steps.results.outputs.details }}
@@ -122,4 +117,4 @@ jobs:
             </details>
 
             ---
-            *このコメントは PR の変更に応じて自動更新されます。*
+            *This comment is updated automatically as the PR changes.*

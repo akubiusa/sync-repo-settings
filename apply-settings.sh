@@ -2,13 +2,12 @@
 set -euo pipefail
 
 # =============================================================================
-# apply-settings.sh - 設定ファイルベースのリポジトリ設定適用スクリプト
+# apply-settings.sh - Apply repository settings defined in a config file
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_VERSION_HEADER="X-GitHub-Api-Version: 2022-11-28"
 
-# デフォルト値
 CONFIG_FILE="$SCRIPT_DIR/config.json"
 DRY_RUN=false
 TARGET_OWNER=""
@@ -16,10 +15,8 @@ TARGET_REPO=""
 VERBOSE=false
 OUTPUT_FORMAT="text"  # text or markdown
 
-# 一時ファイル管理用配列
 TEMP_FILES=()
 
-# 終了時に一時ファイルをクリーンアップ
 cleanup_temp_files() {
   for f in "${TEMP_FILES[@]}"; do
     rm -f "$f" 2>/dev/null || true
@@ -27,7 +24,6 @@ cleanup_temp_files() {
 }
 trap cleanup_temp_files EXIT
 
-# 一時ファイルを作成し、管理配列に登録
 create_temp_file() {
   local tmp
   tmp=$(mktemp) || {
@@ -39,35 +35,35 @@ create_temp_file() {
 }
 
 # =============================================================================
-# ヘルプ
+# Help
 # =============================================================================
 usage() {
   cat << EOF
 Usage: $0 [OPTIONS] [CONFIG_FILE]
 
-設定ファイルに基づいてリポジトリ設定を適用します。
+Applies repository settings based on a config file.
 
 Options:
-  -n, --dry-run       実際には適用せず、何が適用されるか表示
-  -t, --target OWNER  特定のオーナーのみ処理
-  -r, --repo REPO     特定のリポジトリのみ処理 (owner/repo 形式)
-  -v, --verbose       詳細なログを出力
-  -m, --markdown      Markdown形式で出力（PR コメント用）
-  -h, --help          このヘルプを表示
+  -n, --dry-run       Do not apply anything; show what would be applied
+  -t, --target OWNER  Process only the given owner
+  -r, --repo REPO     Process only the given repository (owner/repo format)
+  -v, --verbose       Print verbose logs
+  -m, --markdown      Output in Markdown format (for PR comments)
+  -h, --help          Show this help
 
 Examples:
-  $0                           # config.json を使用して全ターゲットに適用
-  $0 my-config.json            # 指定した設定ファイルを使用
-  $0 --dry-run                 # ドライラン
-  $0 --dry-run --markdown      # ドライラン（Markdown出力）
-  $0 --target tomacheese       # tomacheese のみ処理
-  $0 --repo tomacheese/my-repo # 特定リポジトリのみ処理
+  $0                           # Apply to all targets using config.json
+  $0 my-config.json            # Use the given config file
+  $0 --dry-run                 # Dry run
+  $0 --dry-run --markdown      # Dry run (Markdown output)
+  $0 --target tomacheese       # Process only tomacheese
+  $0 --repo tomacheese/my-repo # Process only the given repository
 EOF
   exit 0
 }
 
 # =============================================================================
-# 引数解析
+# Argument parsing
 # =============================================================================
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -106,7 +102,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # =============================================================================
-# ユーティリティ関数
+# Utility functions
 # =============================================================================
 log() {
   echo "$@" >&2
@@ -118,9 +114,8 @@ log_verbose() {
   fi
 }
 
-# Markdown用の出力バッファ
 MD_BUFFER=""
-# リポジトリヘッダーの遅延出力用
+# Repository header, printed lazily on the first change
 REPO_HEADER=""
 REPO_HEADER_OUTPUT=false
 
@@ -130,10 +125,8 @@ md_log() {
   fi
 }
 
-# 変更がある場合にヘッダーを出力してからログを追加
 md_log_change() {
   if [ "$OUTPUT_FORMAT" = "markdown" ] && [ "$DRY_RUN" = true ]; then
-    # ヘッダーがまだ出力されていない場合は出力
     if [ "$REPO_HEADER_OUTPUT" = false ] && [ -n "$REPO_HEADER" ]; then
       MD_BUFFER+="$REPO_HEADER"$'\n'
       REPO_HEADER_OUTPUT=true
@@ -153,13 +146,13 @@ gh_api() {
 }
 
 # =============================================================================
-# フィルタ評価関数
+# Filter evaluation
 # =============================================================================
 evaluate_filter() {
   local repo_json="$1"
   local filter_json="$2"
 
-  # フィルタが空または null の場合は true
+  # An empty or null filter matches every repository
   if [ -z "$filter_json" ] || [ "$filter_json" = "null" ] || [ "$filter_json" = "{}" ]; then
     echo "true"
     return
@@ -217,7 +210,7 @@ evaluate_filter() {
     fi
   fi
 
-  # name_pattern (正規表現)
+  # name_pattern (extended regex)
   local name_pattern=$(echo "$filter_json" | jq -r '.name_pattern // empty')
   if [ -n "$name_pattern" ]; then
     local repo_name=$(echo "$repo_json" | jq -r '.name')
@@ -227,7 +220,6 @@ evaluate_filter() {
     fi
   fi
 
-  # name_in (配列)
   local name_in=$(echo "$filter_json" | jq -r '.name_in // empty')
   if [ -n "$name_in" ] && [ "$name_in" != "null" ]; then
     local repo_name=$(echo "$repo_json" | jq -r '.name')
@@ -238,7 +230,6 @@ evaluate_filter() {
     fi
   fi
 
-  # name_not_in (配列)
   local name_not_in=$(echo "$filter_json" | jq -r '.name_not_in // empty')
   if [ -n "$name_not_in" ] && [ "$name_not_in" != "null" ]; then
     local repo_name=$(echo "$repo_json" | jq -r '.name')
@@ -249,7 +240,7 @@ evaluate_filter() {
     fi
   fi
 
-  # has_pr_workflow (特殊: リポジトリ情報だけでは判定できない)
+  # has_pr_workflow (special: cannot be decided from the repository object alone, so the workflow files are inspected)
   local has_pr_workflow_filter=$(echo "$filter_json" | jq -r '.has_pr_workflow // empty')
   if [ -n "$has_pr_workflow_filter" ]; then
     local owner=$(echo "$repo_json" | jq -r '.owner.login')
@@ -264,7 +255,7 @@ evaluate_filter() {
   echo "true"
 }
 
-# base64 デコード（Linux/macOS 両対応）
+# Decode base64 (GNU uses -d, BSD/macOS uses -D)
 decode_base64() {
   if base64 --help 2>&1 | grep -q '\-d'; then
     base64 -d
@@ -273,31 +264,28 @@ decode_base64() {
   fi
 }
 
-# PR トリガーが常時実行されるかチェック
-# PR のライフサイクル全体（作成・更新・再開）で実行される必要がある
+# Check whether a workflow's PR trigger always runs
+# It must run for the whole PR lifecycle (opened, reopened, synchronize)
 check_pr_trigger_always_runs() {
   local content="$1"
 
-  # スクリプトと同じディレクトリにある awk ファイルを使用
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   local awk_file="${script_dir}/check-pr-trigger.awk"
 
-  # awk ファイルが存在しない場合はエラー
   if [ ! -f "$awk_file" ]; then
     echo "Error: $awk_file not found" >&2
     echo "false"
     return 1
   fi
 
-  # 外部 awk スクリプトを使用して YAML を解析
   local result
   result=$(echo "$content" | awk -f "$awk_file")
 
   echo "$result"
 }
 
-# PR ワークフローがあるかチェック
+# Check whether the repository has a workflow that always runs on PRs
 check_has_pr_workflow() {
   local owner="$1"
   local repo="$2"
@@ -313,22 +301,21 @@ check_has_pr_workflow() {
     return
   fi
 
-  # スペースを含むファイル名に対応するため while-read を使用
+  # Use while-read so that file names containing spaces are handled
   while IFS= read -r wf; do
     [ -z "$wf" ] && continue
 
-    # ワークフローファイルの内容を取得（配列の場合はスキップ）
+    # Fetch the workflow file content (skip if the response is an array)
     local file_response
     file_response=$(gh_api "/repos/$owner/$repo/contents/.github/workflows/$wf" 2>/dev/null) || continue
 
-    # レスポンスがオブジェクトで content フィールドを持つか確認
+    # Make sure the response is an object with a content field
     if ! echo "$file_response" | jq -e 'type == "object" and has("content")' > /dev/null 2>&1; then
       continue
     fi
 
     local content
     content=$(echo "$file_response" | jq -r '.content' | decode_base64 2>/dev/null) || continue
-    # PR トリガーが常時実行されるかチェック
     if [ "$(check_pr_trigger_always_runs "$content")" = "true" ]; then
       echo "true"
       return
@@ -339,19 +326,18 @@ check_has_pr_workflow() {
 }
 
 # =============================================================================
-# 設定マージ関数
+# Settings merge
 # =============================================================================
 merge_settings() {
   local defaults="$1"
   local overrides="$2"
 
-  # overrides が空または null の場合は defaults を返す
+  # No overrides: return the defaults as is
   if [ -z "$overrides" ] || [ "$overrides" = "null" ]; then
     echo "$defaults"
     return
   fi
 
-  # _all が指定されている場合は全設定に適用
   local all_override=$(echo "$overrides" | jq '.["_all"] // null')
   if [ "$all_override" != "null" ]; then
     local result="$defaults"
@@ -362,8 +348,8 @@ merge_settings() {
     return
   fi
 
-  # 通常のマージ（mode: skip は上書きしない）
-  # 既存設定で mode: skip の場合、後続ルールで上書きされないように保護
+  # Regular merge (a setting whose mode is skip is never overridden)
+  # Protect mode: skip so that later rules cannot overwrite it
   local result="$defaults"
   for key in repo_settings workflow_permissions actions_variables rulesets copilot_code_review; do
     local current_mode
@@ -373,7 +359,6 @@ merge_settings() {
 
     if [ "$override_value" != "null" ]; then
       if [ "$current_mode" = "skip" ]; then
-        # mode: skip は保護（上書きしない）
         continue
       fi
       result=$(echo "$result" | jq --argjson override "$override_value" ".${key} = (.${key} // {}) * \$override")
@@ -383,10 +368,9 @@ merge_settings() {
 }
 
 # =============================================================================
-# 設定適用関数
+# Apply functions
 # =============================================================================
 
-# リポジトリ基本設定を適用
 apply_repo_settings() {
   local owner="$1"
   local repo="$2"
@@ -395,26 +379,23 @@ apply_repo_settings() {
   local mode=$(echo "$settings" | jq -r '.mode // "upsert"')
 
   if [ "$mode" = "skip" ]; then
-    log_verbose "repo_settings: スキップ"
+    log_verbose "repo_settings: skipped"
     return
   fi
 
   local values=$(echo "$settings" | jq '.values // {}')
 
-  # 現在の設定を取得
   local current_settings
   current_settings=$(gh_api "/repos/$owner/$repo" 2>/dev/null) || {
-    log_verbose "repo_settings: 現在の設定取得エラー"
+    log_verbose "repo_settings: failed to fetch current settings"
     current_settings="{}"
   }
 
-  # 変更が必要な項目を検出
-  # jq の // 演算子は false を falsy として扱うため、null チェックを明示的に行う
+  # jq's // operator treats false as falsy, so null is checked explicitly
   local -a changes=()
   for key in $(echo "$values" | jq -r 'keys[]'); do
     local desired_value current_value
     desired_value=$(echo "$values" | jq -r ".[\"$key\"]")
-    # null の場合のみ空文字列を返し、false はそのまま返す
     current_value=$(echo "$current_settings" | jq -r "if .[\"$key\"] == null then \"\" else .[\"$key\"] end")
 
     if [ "$desired_value" != "$current_value" ]; then
@@ -422,9 +403,8 @@ apply_repo_settings() {
     fi
   done
 
-  # 変更がない場合はスキップ
   if [ ${#changes[@]} -eq 0 ]; then
-    log_verbose "repo_settings: 変更なし"
+    log_verbose "repo_settings: no changes"
     return
   fi
 
@@ -434,8 +414,8 @@ apply_repo_settings() {
     return
   fi
 
-  # API呼び出し用のパラメータを配列として構築（コマンドインジェクション対策）
-  # -f は文字列、-F は boolean/数値（raw JSON）用
+  # Build the API parameters as an array (command injection mitigation)
+  # -f is for strings, -F is for booleans/numbers (raw JSON)
   local -a params=()
   for key in $(echo "$values" | jq -r 'keys[]'); do
     local value value_type
@@ -453,11 +433,10 @@ apply_repo_settings() {
       log "    repo_settings: error"
       return 1
     }
-    log "    repo_settings: 完了"
+    log "    repo_settings: done"
   fi
 }
 
-# Workflow permissions を適用
 apply_workflow_permissions() {
   local owner="$1"
   local repo="$2"
@@ -466,7 +445,7 @@ apply_workflow_permissions() {
   local mode=$(echo "$settings" | jq -r '.mode // "upsert"')
 
   if [ "$mode" = "skip" ]; then
-    log_verbose "workflow_permissions: スキップ"
+    log_verbose "workflow_permissions: skipped"
     return
   fi
 
@@ -474,17 +453,15 @@ apply_workflow_permissions() {
   local default_perms=$(echo "$values" | jq -r '.default_workflow_permissions // "write"')
   local can_approve=$(echo "$values" | jq -r '.can_approve_pull_request_reviews // "true"')
 
-  # 現在の設定を取得
   local current_settings
   current_settings=$(gh_api "/repos/$owner/$repo/actions/permissions/workflow" 2>/dev/null) || {
-    log_verbose "workflow_permissions: 現在の設定取得エラー"
+    log_verbose "workflow_permissions: failed to fetch current settings"
     current_settings="{}"
   }
 
   local current_perms=$(echo "$current_settings" | jq -r 'if .default_workflow_permissions == null then "" else .default_workflow_permissions end')
   local current_approve=$(echo "$current_settings" | jq -r 'if .can_approve_pull_request_reviews == null then "" else .can_approve_pull_request_reviews end')
 
-  # 変更が必要かチェック
   local -a changes=()
   if [ "$default_perms" != "$current_perms" ]; then
     changes+=("default: $current_perms → $default_perms")
@@ -493,9 +470,8 @@ apply_workflow_permissions() {
     changes+=("can_approve: $current_approve → $can_approve")
   fi
 
-  # 変更がない場合はスキップ
   if [ ${#changes[@]} -eq 0 ]; then
-    log_verbose "workflow_permissions: 変更なし"
+    log_verbose "workflow_permissions: no changes"
     return
   fi
 
@@ -511,10 +487,9 @@ apply_workflow_permissions() {
       log "    workflow_permissions: error"
       return 1
     }
-  log "    workflow_permissions: 完了"
+  log "    workflow_permissions: done"
 }
 
-# Actions variables を適用
 apply_actions_variables() {
   local owner="$1"
   local repo="$2"
@@ -523,7 +498,7 @@ apply_actions_variables() {
   local mode=$(echo "$settings" | jq -r '.mode // "upsert"')
 
   if [ "$mode" = "skip" ]; then
-    log_verbose "actions_variables: スキップ"
+    log_verbose "actions_variables: skipped"
     return
   fi
 
@@ -532,61 +507,56 @@ apply_actions_variables() {
   for key in $(echo "$values" | jq -r 'keys[]'); do
     local value=$(echo "$values" | jq -r ".[\"$key\"]")
 
-    # 現在の変数を取得
     local current_var
     current_var=$(gh_api "/repos/$owner/$repo/actions/variables/$key" 2>/dev/null) || current_var=""
 
     if [ -n "$current_var" ]; then
-      # 変数が存在する場合
       local current_value=$(echo "$current_var" | jq -r '.value // ""')
 
       if [ "$value" = "$current_value" ]; then
-        log_verbose "actions_variables: $key は既に同じ値"
+        log_verbose "actions_variables: $key already has the same value"
         continue
       fi
 
       if [ "$mode" = "insert" ]; then
-        log_verbose "actions_variables: $key は既に存在、スキップ"
+        log_verbose "actions_variables: $key already exists, skipped"
         continue
       fi
 
       if [ "$DRY_RUN" = true ]; then
-        log "    [DRY-RUN] actions_variables: $key=$value (現在: $current_value)"
+        log "    [DRY-RUN] actions_variables: $key=$value (current: $current_value)"
         md_log_change "  - **actions_variables** ($mode): $key: $current_value → $value"
         continue
       fi
 
-      # 更新
       gh_api -X PATCH "/repos/$owner/$repo/actions/variables/$key" \
         -f value="$value" > /dev/null 2>&1 || {
           log "    actions_variables ($key): update error"
           continue
         }
-      log "    actions_variables: $key を更新"
+      log "    actions_variables: updated $key"
     else
-      # 変数が存在しない場合
       if [ "$DRY_RUN" = true ]; then
-        log "    [DRY-RUN] actions_variables: $key=$value (新規作成)"
-        md_log_change "  - **actions_variables** ($mode): $key=$value (新規)"
+        log "    [DRY-RUN] actions_variables: $key=$value (create)"
+        md_log_change "  - **actions_variables** ($mode): $key=$value (new)"
         continue
       fi
 
-      # 作成
       gh_api -X POST "/repos/$owner/$repo/actions/variables" \
         -f name="$key" \
         -f value="$value" > /dev/null 2>&1 || {
           log "    actions_variables ($key): creation error"
           continue
         }
-      log "    actions_variables: $key を作成"
+      log "    actions_variables: created $key"
     fi
   done
 }
 
-# ステータスチェックを自動検出
-# ワークフローファイルを読み取り、PR トリガーがあるワークフローを特定
-# paths 条件があるワークフローは除外（ただし pull_request_target も存在する場合は除外しない）
-# 各ワークフローから1つのジョブを選択（prefer_finished_jobs が true なら finished ジョブを優先）
+# Auto-detect status checks
+# Reads the workflow files and picks the workflows that have a PR trigger
+# Workflows with a paths filter are excluded (unless pull_request_target is also present)
+# One job is selected per workflow (a finished job is preferred when prefer_finished_jobs is true)
 detect_status_checks() {
   local owner="$1"
   local repo="$2"
@@ -595,7 +565,6 @@ detect_status_checks() {
   local exclude_patterns=$(echo "$settings" | jq -r '.exclude_patterns // [] | join("|")')
   local prefer_finished=$(echo "$settings" | jq -r '.prefer_finished_jobs // true')
 
-  # ワークフローファイル一覧を取得
   local workflows
   workflows=$(gh_api "/repos/$owner/$repo/contents/.github/workflows" 2>/dev/null | jq -r '.[].name' 2>/dev/null) || {
     echo "[]"
@@ -609,15 +578,12 @@ detect_status_checks() {
 
   local all_checks="[]"
 
-  # 各ワークフローファイルを読み取り
   while IFS= read -r wf; do
     [ -z "$wf" ] && continue
 
-    # ワークフローファイルの内容を取得
     local file_response
     file_response=$(gh_api "/repos/$owner/$repo/contents/.github/workflows/$wf" 2>/dev/null) || continue
 
-    # レスポンスがオブジェクトで content フィールドを持つか確認
     if ! echo "$file_response" | jq -e 'type == "object" and has("content")' > /dev/null 2>&1; then
       continue
     fi
@@ -625,41 +591,36 @@ detect_status_checks() {
     local content
     content=$(echo "$file_response" | jq -r '.content' | decode_base64 2>/dev/null) || continue
 
-    # PR トリガーが常時実行されるかチェック
     if [ "$(check_pr_trigger_always_runs "$content")" != "true" ]; then
       continue
     fi
 
-    # ワークフロー名を取得
     local wf_name
     wf_name=$(echo "$content" | grep -E '^name:' | head -1 | sed 's/name: //' | tr -d '"' | tr -d "'")
 
-    # 除外パターンに一致する場合はスキップ
     if [ -n "$exclude_patterns" ] && echo "$wf_name" | grep -qiE "$exclude_patterns"; then
       continue
     fi
 
-    # ワークフロー ID を取得（ファイル名から）
     local workflow_file="$wf"
 
-    # ワークフローのトリガーに応じてイベントフィルタを決定
-    # pull_request_target がある場合はそちらを優先（paths 条件に関係なく実行されるため）
+    # Choose the event filter from the workflow triggers
+    # pull_request_target wins when present because it runs regardless of paths filters
     local event_filter="pull_request"
     if echo "$content" | grep -qE '^\s*pull_request_target:'; then
       event_filter="pull_request_target"
     fi
 
-    # このワークフローの最新実行を取得
     local workflow_runs
     workflow_runs=$(gh_api "/repos/$owner/$repo/actions/workflows/$workflow_file/runs?event=$event_filter&per_page=5" 2>/dev/null) || continue
 
-    # 最新のジョブが存在する実行を取得
-    # action_required は承認待ちでジョブがないため除外
+    # Pick the latest run that has jobs
+    # action_required runs are excluded because they wait for approval and have no jobs
     local run_id
     run_id=$(echo "$workflow_runs" | jq -r '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure" or .conclusion == "cancelled")] | .[0].id // empty')
 
     if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
-      # ジョブが存在する実行がない場合は最新の実行を使用
+      # No run with jobs: fall back to the latest run
       run_id=$(echo "$workflow_runs" | jq -r '.workflow_runs[0].id // empty')
     fi
 
@@ -667,7 +628,6 @@ detect_status_checks() {
       continue
     fi
 
-    # 実行のジョブからチェック名を取得
     local jobs_response
     jobs_response=$(gh_api "/repos/$owner/$repo/actions/runs/$run_id/jobs" 2>/dev/null) || continue
 
@@ -682,7 +642,6 @@ detect_status_checks() {
     while IFS= read -r check_name; do
       [ -z "$check_name" ] && continue
 
-      # ジョブ名が除外パターンに一致する場合はスキップ
       if [ -n "$exclude_patterns" ] && echo "$check_name" | grep -qiE "$exclude_patterns"; then
         continue
       fi
@@ -690,21 +649,21 @@ detect_status_checks() {
       if [ -z "$first_check" ]; then
         first_check="$check_name"
       fi
-      # finished ジョブの検出: "finished-xxx", "xxx finished", "Check finished xxx" などのパターン
+      # Detect a finished job: patterns such as "finished-xxx", "xxx finished", "Check finished xxx"
       if echo "$check_name" | grep -qiE '(^finished[-: ]|[-: ]finished$|[-: ]finished[-: ])'; then
         finished_check="$check_name"
       fi
     done <<< "$check_names"
 
-    # このワークフローから1つのジョブを選択
-    # prefer_finished が true で finished ジョブがあれば finished を、なければ最初のジョブを選択
+    # Select one job per workflow
+    # Prefer the finished job when prefer_finished is true and one exists; otherwise use the first job
     local selected_check="$first_check"
     if [ "$prefer_finished" = "true" ] && [ -n "$finished_check" ]; then
       selected_check="$finished_check"
     fi
 
     if [ -n "$selected_check" ]; then
-      # integration_id 15368 は GitHub Actions のアプリケーション ID
+      # integration_id 15368 is the GitHub Actions app ID
       all_checks=$(echo "$all_checks" | jq --arg ctx "$selected_check" '. + [{"context": $ctx, "integration_id": 15368}]')
     fi
   done <<< "$workflows"
@@ -712,7 +671,6 @@ detect_status_checks() {
   echo "$all_checks"
 }
 
-# Rulesets を適用
 apply_rulesets() {
   local owner="$1"
   local repo="$2"
@@ -721,19 +679,18 @@ apply_rulesets() {
   local mode=$(echo "$settings" | jq -r '.mode // "upsert"')
 
   if [ "$mode" = "skip" ]; then
-    log_verbose "rulesets: スキップ"
+    log_verbose "rulesets: skipped"
     return
   fi
 
   local create_if_missing=$(echo "$settings" | jq -r '.create_if_missing // true')
   local template=$(echo "$settings" | jq '.template // {}')
 
-  # 既存のルールセットを取得
   local existing_rulesets=$(gh_api "/repos/$owner/$repo/rulesets" 2>/dev/null) || existing_rulesets="[]"
 
-  # レスポンスが配列かどうかを確認（エラーレスポンスの場合はオブジェクト）
+  # The response is an object (not an array) when the API returned an error
   if ! echo "$existing_rulesets" | jq -e 'type == "array"' > /dev/null 2>&1; then
-    log_verbose "rulesets: ルールセット取得エラー（無効なレスポンス）"
+    log_verbose "rulesets: failed to fetch rulesets (invalid response)"
     existing_rulesets="[]"
   fi
 
@@ -741,11 +698,10 @@ apply_rulesets() {
 
   if [ "$ruleset_count" = "0" ]; then
     if [ "$create_if_missing" != "true" ]; then
-      log "    rulesets: ルールセットなし、作成スキップ"
+      log "    rulesets: no ruleset, creation skipped"
       return
     fi
 
-    # ステータスチェックを検出
     local status_check_settings=$(echo "$template" | jq '.rules.required_status_checks // {}')
     local detection=$(echo "$status_check_settings" | jq -r '.detection // "auto"')
 
@@ -755,7 +711,7 @@ apply_rulesets() {
     fi
 
     if [ "$status_checks" = "[]" ]; then
-      log "    rulesets: PR ワークフローなし、作成スキップ"
+      log "    rulesets: no PR workflow, creation skipped"
       return
     fi
 
@@ -765,7 +721,6 @@ apply_rulesets() {
       return
     fi
 
-    # ルールセットを作成
     local rules_array=$(jq -n \
       --argjson status_checks "$status_checks" \
       --argjson pr_params "$(echo "$template" | jq '.rules.pull_request // {}')" \
@@ -800,43 +755,39 @@ apply_rulesets() {
     result=$(echo "$payload" | gh_api -X POST "/repos/$owner/$repo/rulesets" --input - 2>"$error_output") || {
       local error_msg
       error_msg=$(cat "$error_output")
-      # 403 エラー（GitHub Pro が必要）の場合は警告のみ
-      # gh api はエラー時に "HTTP 403" を stderr に出力する
+      # A 403 (GitHub Pro required) is only a warning
+      # gh api prints "HTTP 403" to stderr on error
       if echo "$error_msg" | grep -qE 'HTTP 403|403 Forbidden'; then
-        log "    rulesets: スキップ（GitHub Pro が必要、またはプライベートリポジトリ）"
+        log "    rulesets: skipped (GitHub Pro required, or a private repository)"
         return 0
       fi
       log "    rulesets: creation error - $error_msg"
       return 1
     }
 
-    # レスポンスが有効な JSON かつ id を含むか確認
     local ruleset_id
     if echo "$result" | jq -e '.id' > /dev/null 2>&1; then
       ruleset_id=$(echo "$result" | jq -r '.id')
-      log "    rulesets: 作成完了 (ID: $ruleset_id)"
+      log "    rulesets: created (ID: $ruleset_id)"
     else
-      log "    rulesets: 作成完了（ID 取得失敗）"
+      log "    rulesets: created (failed to get ID)"
     fi
   else
-    # 既存のルールセットがある場合は、mode: upsert なら更新
+    # An existing ruleset is updated when mode is upsert
     if [ "$mode" = "upsert" ]; then
-      # 最初のルールセットを対象に更新（通常は master ルールセット）
+      # Only the first ruleset is updated (normally the master ruleset)
       local ruleset_id=$(echo "$existing_rulesets" | jq -r '.[0].id')
       local ruleset_name=$(echo "$existing_rulesets" | jq -r '.[0].name')
 
-      # 既存のルールセットの詳細を取得
       local existing_ruleset
       existing_ruleset=$(gh_api "/repos/$owner/$repo/rulesets/$ruleset_id" 2>/dev/null) || {
-        log_verbose "rulesets: 既存ルールセット取得エラー"
+        log_verbose "rulesets: failed to fetch the existing ruleset"
         return
       }
 
-      # 変更を追跡するためのフラグと更新内容
       local needs_update=false
       local update_messages=()
 
-      # ステータスチェックを検出
       local status_check_settings=$(echo "$template" | jq '.rules.required_status_checks // {}')
       local detection=$(echo "$status_check_settings" | jq -r '.detection // "auto"')
 
@@ -845,11 +796,10 @@ apply_rulesets() {
         status_checks=$(detect_status_checks "$owner" "$repo" "$status_check_settings")
       fi
 
-      # 既存の required_status_checks を取得
       local existing_status_checks
       existing_status_checks=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks] | flatten')
 
-      # 検出したステータスチェックと既存のものが同じか確認
+      # Compare the detected status checks with the existing ones
       local new_contexts=$(echo "$status_checks" | jq -r '[.[].context] | sort | join(",")')
       local existing_contexts=$(echo "$existing_status_checks" | jq -r '[.[].context] | sort | join(",")')
 
@@ -857,10 +807,10 @@ apply_rulesets() {
       if [ "$status_checks" != "[]" ] && [ "$new_contexts" != "$existing_contexts" ]; then
         status_checks_changed=true
         needs_update=true
-        update_messages+=("ステータスチェック: $existing_contexts → $new_contexts")
+        update_messages+=("status checks: $existing_contexts → $new_contexts")
       fi
 
-      # copilot_code_review の設定を取得（boolean false を正しく扱うため has() でキーの存在を確認）
+      # Read the copilot_code_review settings (has() is used because boolean false must be handled correctly)
       local copilot_settings=$(echo "$template" | jq '.rules.copilot_code_review // {}')
       local copilot_review_on_push
       local copilot_review_draft
@@ -875,7 +825,6 @@ apply_rulesets() {
         copilot_review_draft="null"
       fi
 
-      # 既存の copilot_code_review ルールを取得
       local existing_copilot
       existing_copilot=$(echo "$existing_ruleset" | jq '.rules[] | select(.type == "copilot_code_review") | .parameters // {}')
       local existing_review_on_push
@@ -901,7 +850,7 @@ apply_rulesets() {
       fi
 
       if [ "$needs_update" = false ]; then
-        log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)、変更なし"
+        log_verbose "rulesets: existing ruleset found ($ruleset_count), no changes"
         return
       fi
 
@@ -913,22 +862,18 @@ apply_rulesets() {
         return
       fi
 
-      # ルールを更新
       local updated_rules
       updated_rules=$(echo "$existing_ruleset" | jq '.rules')
 
-      # required_status_checks の更新
       if [ "$status_checks_changed" = true ]; then
         local has_status_check_rule
         has_status_check_rule=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "required_status_checks")] | length')
 
         if [ "$has_status_check_rule" = "0" ]; then
-          # required_status_checks ルールが存在しない場合は追加
           updated_rules=$(echo "$updated_rules" | jq --argjson new_checks "$status_checks" '
             . + [{"type": "required_status_checks", "parameters": {"required_status_checks": $new_checks}}]
           ')
         else
-          # 既存のルールを更新
           updated_rules=$(echo "$updated_rules" | jq --argjson new_checks "$status_checks" '
             map(
               if .type == "required_status_checks" then
@@ -940,12 +885,11 @@ apply_rulesets() {
         fi
       fi
 
-      # copilot_code_review の更新
       if [ "$copilot_changed" = true ]; then
         local has_copilot_rule
         has_copilot_rule=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "copilot_code_review")] | length')
 
-        # 新しい copilot パラメータを構築（null 値は含めない）
+        # Build the new copilot parameters (null values are omitted)
         local new_copilot_params
         new_copilot_params=$(jq -n \
           --argjson review_on_push "$copilot_review_on_push" \
@@ -956,12 +900,10 @@ apply_rulesets() {
           ')
 
         if [ "$has_copilot_rule" = "0" ]; then
-          # copilot_code_review ルールが存在しない場合は追加
           updated_rules=$(echo "$updated_rules" | jq --argjson params "$new_copilot_params" '
             . + [{"type": "copilot_code_review", "parameters": $params}]
           ')
         else
-          # 既存のルールを更新
           updated_rules=$(echo "$updated_rules" | jq --argjson params "$new_copilot_params" '
             map(
               if .type == "copilot_code_review" then
@@ -994,19 +936,19 @@ apply_rulesets() {
             success_msg="$msg"
           fi
         done
-        log "    rulesets [$ruleset_name]: 更新完了 ($success_msg)"
+        log "    rulesets [$ruleset_name]: updated ($success_msg)"
       else
         local error_msg
         error_msg=$(cat "$error_output")
-        log "    rulesets: 更新エラー - $error_msg"
+        log "    rulesets: update error - $error_msg"
       fi
     else
-      log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)"
+      log_verbose "rulesets: existing ruleset found ($ruleset_count)"
     fi
   fi
 }
 
-# Copilot code review を適用 (既存ルールセットに追加/更新)
+# Apply Copilot code review (add to or update the existing rulesets)
 apply_copilot_code_review() {
   local owner="$1"
   local repo="$2"
@@ -1015,12 +957,12 @@ apply_copilot_code_review() {
   local mode=$(echo "$settings" | jq -r '.mode // "upsert"')
 
   if [ "$mode" = "skip" ]; then
-    log_verbose "copilot_code_review: スキップ"
+    log_verbose "copilot_code_review: skipped"
     return
   fi
 
   local values=$(echo "$settings" | jq '.values // {}')
-  # boolean false を正しく扱うため has() でキーの存在を確認
+  # has() is used because boolean false must be handled correctly
   local review_on_push
   local review_draft
   if echo "$values" | jq -e 'has("review_on_push")' > /dev/null 2>&1; then
@@ -1034,23 +976,22 @@ apply_copilot_code_review() {
     review_draft="true"
   fi
 
-  # 既存のルールセットを取得
   local rulesets
   rulesets=$(gh_api "/repos/$owner/$repo/rulesets" 2>/dev/null) || {
-    log_verbose "copilot_code_review: ルールセット取得エラー"
+    log_verbose "copilot_code_review: failed to fetch rulesets"
     return
   }
 
-  # レスポンスが配列かどうかを確認（エラーレスポンスの場合はオブジェクト）
+  # The response is an object (not an array) when the API returned an error
   if ! echo "$rulesets" | jq -e 'type == "array"' > /dev/null 2>&1; then
-    log_verbose "copilot_code_review: ルールセット取得エラー（無効なレスポンス）"
+    log_verbose "copilot_code_review: failed to fetch rulesets (invalid response)"
     return
   fi
 
   local ruleset_count=$(echo "$rulesets" | jq 'length')
 
   if [ "$ruleset_count" = "0" ]; then
-    log_verbose "copilot_code_review: ルールセットなし、スキップ"
+    log_verbose "copilot_code_review: no ruleset, skipped"
     return
   fi
 
@@ -1058,7 +999,6 @@ apply_copilot_code_review() {
     local ruleset=$(gh_api "/repos/$owner/$repo/rulesets/$ruleset_id" 2>/dev/null) || continue
     local ruleset_name=$(echo "$ruleset" | jq -r '.name')
 
-    # copilot_code_review ルールがあるか確認
     local has_copilot=$(echo "$ruleset" | jq '[.rules[] | select(.type == "copilot_code_review")] | length')
 
     if [ "$has_copilot" != "0" ]; then
@@ -1067,28 +1007,27 @@ apply_copilot_code_review() {
       local current_draft=$(echo "$current" | jq -r '.review_draft_pull_requests')
 
       if [ "$current_push" = "$review_on_push" ] && [ "$current_draft" = "$review_draft" ]; then
-        log_verbose "copilot_code_review [$ruleset_name]: 既に設定済み"
+        log_verbose "copilot_code_review [$ruleset_name]: already configured"
         continue
       fi
 
       if [ "$mode" = "insert" ]; then
-        log_verbose "copilot_code_review [$ruleset_name]: 既に存在、スキップ"
+        log_verbose "copilot_code_review [$ruleset_name]: already exists, skipped"
         continue
       fi
     fi
 
     if [ "$DRY_RUN" = true ]; then
       if [ "$has_copilot" = "0" ]; then
-        log "    [DRY-RUN] copilot_code_review [$ruleset_name]: 追加"
-        md_log_change "  - **copilot_code_review** [$ruleset_name]: 追加予定"
+        log "    [DRY-RUN] copilot_code_review [$ruleset_name]: add"
+        md_log_change "  - **copilot_code_review** [$ruleset_name]: will be added"
       else
-        log "    [DRY-RUN] copilot_code_review [$ruleset_name]: 更新"
-        md_log_change "  - **copilot_code_review** [$ruleset_name]: 更新予定"
+        log "    [DRY-RUN] copilot_code_review [$ruleset_name]: update"
+        md_log_change "  - **copilot_code_review** [$ruleset_name]: will be updated"
       fi
       continue
     fi
 
-    # 新しい rules 配列を作成
     local new_rules=$(echo "$ruleset" | jq --argjson push "$review_on_push" --argjson draft "$review_draft" '
       .rules | map(select(.type != "copilot_code_review")) + [{
         "type": "copilot_code_review",
@@ -1113,18 +1052,17 @@ apply_copilot_code_review() {
     }
 
     if [ "$has_copilot" = "0" ]; then
-      log "    copilot_code_review [$ruleset_name]: 追加完了"
+      log "    copilot_code_review [$ruleset_name]: added"
     else
-      log "    copilot_code_review [$ruleset_name]: 更新完了"
+      log "    copilot_code_review [$ruleset_name]: updated"
     fi
   done
 }
 
 # =============================================================================
-# メイン処理
+# Main
 # =============================================================================
 
-# 設定ファイルを読み込み
 if [ ! -f "$CONFIG_FILE" ]; then
   log "Error: Config file not found: $CONFIG_FILE"
   exit 1
@@ -1134,9 +1072,7 @@ CONFIG=$(cat "$CONFIG_FILE")
 DEFAULTS=$(echo "$CONFIG" | jq '.defaults // {}')
 RULES=$(echo "$CONFIG" | jq '.rules // []')
 
-# ターゲットを取得
 if [ -n "$TARGET_REPO" ]; then
-  # 特定リポジトリのみ
   TARGETS=("${TARGET_REPO%%/*}")
   TARGET_REPO_NAME="${TARGET_REPO##*/}"
 elif [ -n "$TARGET_OWNER" ]; then
@@ -1145,25 +1081,24 @@ else
   readarray -t TARGETS < <(echo "$CONFIG" | jq -r '.targets[]')
 fi
 
-log "設定ファイル: $CONFIG_FILE"
-log "ターゲット: ${TARGETS[*]}"
+log "Config file: $CONFIG_FILE"
+log "Targets: ${TARGETS[*]}"
 if [ "$DRY_RUN" = true ]; then
-  log "モード: dry-run"
+  log "Mode: dry-run"
 fi
 log ""
 
 if [ "$OUTPUT_FORMAT" = "markdown" ]; then
-  md_log "## 適用予定の設定"
+  md_log "## Settings to be applied"
   md_log ""
 fi
 
-# 各ターゲットを処理
 for owner in "${TARGETS[@]}"; do
   log "=== $owner ==="
   md_log "### $owner"
   md_log ""
 
-  # ユーザーかオーガニゼーションかを判定
+  # Determine whether the owner is a user or an organization
   owner_type=$(gh_api "users/${owner}" 2>/dev/null | jq -r '.type') || {
     log "Error: Owner not found: $owner"
     continue
@@ -1175,32 +1110,27 @@ for owner in "${TARGETS[@]}"; do
     repos_url="https://api.github.com/users/${owner}/repos?per_page=100&type=owner&sort=full_name"
   fi
 
-  # リポジトリ一覧を取得
   repos_json=$(gh_api --paginate "$repos_url" 2>/dev/null) || {
     log "Error: Failed to fetch repository list"
     continue
   }
 
-  # 各リポジトリを処理（プロセス置換でサブシェル問題を回避）
+  # Process each repository (process substitution avoids the subshell problem)
   while read -r repo_json; do
     repo_name=$(echo "$repo_json" | jq -r '.name')
     repo_full_name=$(echo "$repo_json" | jq -r '.full_name')
 
-    # 特定リポジトリが指定されている場合はフィルタ
     if [ -n "${TARGET_REPO_NAME:-}" ] && [ "$repo_name" != "$TARGET_REPO_NAME" ]; then
       continue
     fi
 
     log ""
-    log "処理中: $repo_full_name"
+    log "Processing: $repo_full_name"
 
-    # デフォルト設定から開始
     effective_settings="$DEFAULTS"
 
-    # マッチしたルール名を収集
     matched_rules=""
 
-    # ルールを評価して設定をマージ
     rules_count=$(echo "$RULES" | jq 'length')
     for ((i=0; i<rules_count; i++)); do
       rule=$(echo "$RULES" | jq ".[$i]")
@@ -1211,7 +1141,7 @@ for owner in "${TARGETS[@]}"; do
       match=$(evaluate_filter "$repo_json" "$rule_filter")
 
       if [ "$match" = "true" ]; then
-        log_verbose "ルール適用: $rule_name"
+        log_verbose "Rule applied: $rule_name"
         effective_settings=$(merge_settings "$effective_settings" "$rule_settings")
         if [ -n "$matched_rules" ]; then
           matched_rules="$matched_rules, $rule_name"
@@ -1221,22 +1151,20 @@ for owner in "${TARGETS[@]}"; do
       fi
     done
 
-    # Markdown出力用のヘッダーを設定（変更がある場合のみ出力される）
+    # Markdown header (only printed when there is a change)
     REPO_HEADER="#### $repo_full_name"
     if [ -n "$matched_rules" ]; then
-      REPO_HEADER+=$'\n'"> 適用ルール: $matched_rules"
+      REPO_HEADER+=$'\n'"> Applied rules: $matched_rules"
     fi
     REPO_HEADER+=$'\n'
     REPO_HEADER_OUTPUT=false
 
-    # 各設定を適用
     apply_repo_settings "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.repo_settings // {}')"
     apply_workflow_permissions "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.workflow_permissions // {}')"
     apply_actions_variables "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.actions_variables // {}')"
     apply_rulesets "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.rulesets // {}')"
     apply_copilot_code_review "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.copilot_code_review // {}')"
 
-    # 変更があった場合のみ空行を追加
     if [ "$REPO_HEADER_OUTPUT" = true ]; then
       md_log ""
     fi
@@ -1244,7 +1172,6 @@ for owner in "${TARGETS[@]}"; do
 done
 
 log ""
-log "処理が完了しました。"
+log "Done."
 
-# Markdown出力をフラッシュ
 md_flush

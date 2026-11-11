@@ -1,39 +1,24 @@
-# GitHub Copilot コードレビュー指示
+# Copilot code review instructions
 
-このリポジトリは Bash スクリプト (`apply-settings.sh`) を中心に、`gh` CLI と `jq` を用いて
-複数の GitHub リポジトリ設定を一括同期するツールである。レビュー時は以下の観点を重視すること。
+Read `AGENTS.md` at the repository root first; it is the source of truth for structure, commands and conventions.
 
-## レビュー時の重点確認項目
+## Language
 
-- **エラーハンドリング**: すべてのスクリプトは `set -euo pipefail` 前提。パイプや
-  サブシェルで失敗が握りつぶされていないか確認する。
-- **`gh api` 呼び出し**: `gh_api` ヘルパー経由で呼び出し、`X-GitHub-Api-Version` ヘッダーを
-  含めているか。API レスポンスのエラー（`.message` 等）を検査しているか確認する。
-- **`jq` の堅牢性**: 想定するキーが存在しない場合の挙動を確認する。`// empty` や
-  `// default` によるフォールバックが必要な箇所で欠落していないか。
-- **変数のクォート**: すべての変数展開が `"$VAR"` の形でダブルクォートされているか。
-  未クォートによる単語分割・グロブ展開のリスクを指摘する。
-- **関数スコープ**: 関数内の変数は `local` を使用しているか（トップレベルでは使用しない）。
-- **`--dry-run` の整合性**: 破壊的な API 呼び出し（設定変更・ルールセット作成等）が
-  dry-run モードで確実にスキップされるか確認する。副作用が dry-run を無視して実行されると
-  重大な事故につながる。
+Write review comments, and expect all deliverables (code comments, docs, commit messages, PR text), in English.
+Runtime log and error messages are English too.
 
-## セキュリティ
+## Review checklist
 
-- `PERSONAL_ACCESS_TOKEN` などのトークンをログ出力・エコー・コミットしていないか。
-- API レスポンスに含まれうる機密情報をそのまま出力していないか。
-- ユーザー入力（`--repo`、`--target` の値等）を `gh api` のパスに渡す際、意図しない
-  インジェクションが起きないか確認する。
+- Error handling: `set -euo pipefail` is assumed; flag pipes or subshells that swallow failures.
+- Every `gh api` call goes through `gh_api` (version header) and checks the response for errors.
+- `jq` filters tolerate missing keys and handle boolean `false` correctly (`// empty` and `//` treat `false` as empty).
+- All variable expansions are double-quoted; function variables use `local` (top-level `local` is not possible and is intentionally absent).
+- Mutating API calls (PATCH/PUT/POST) are skipped under `--dry-run`; a dry-run that changes anything is a serious bug.
+- Secrets (`PERSONAL_ACCESS_TOKEN`) are never echoed or logged, and `--repo`/`--target` values cannot inject into API paths or shell commands.
+- Changes to `config.json` structure or CLI options update the `usage` text, `README.md` and `AGENTS.md` together.
+- Commit and PR titles follow Conventional Commits.
 
-## コーディング規約（lint 上の指摘対象）
+## Do not flag
 
-- コード内コメントは日本語、エラーメッセージは英語。
-- 日本語と英数字の間には半角スペースを入れる。
-- 主要な関数には、その用途を説明する日本語コメントを定義の直前に記載する。
-- コミットメッセージは [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) に従い、`<description>` は日本語。
-
-## フラグすべきでない既知パターン
-
-- `apply-settings.sh` のトップレベルで `local` を使わないのは意図的（関数外では使えないため）。
-- `config.json` のスキーマ変更に伴い `apply-settings.sh` のヘルプや `CLAUDE.md` を更新する
-  差分は正当であり、重複記載として指摘しない。
+- `SC2155` shellcheck warnings (`local x=$(...)`) are existing and accepted.
+- Updating `usage`, `README.md` and `AGENTS.md` together after a config or option change is intended, not duplication.
