@@ -1160,11 +1160,15 @@ for owner in "${TARGETS[@]}"; do
     REPO_HEADER+=$'\n'
     REPO_HEADER_OUTPUT=false
 
-    apply_repo_settings "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.repo_settings // {}')"
-    apply_workflow_permissions "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.workflow_permissions // {}')"
-    apply_actions_variables "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.actions_variables // {}')"
-    apply_rulesets "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.rulesets // {}')"
-    apply_copilot_code_review "$owner" "$repo_name" "$(echo "$effective_settings" | jq '.copilot_code_review // {}')"
+    # Each key names its apply_<key> function; a key absent from the config is skipped
+    for setting_key in repo_settings workflow_permissions actions_variables rulesets copilot_code_review; do
+      setting_json=$(echo "$effective_settings" | jq -c --arg key "$setting_key" '.[$key] // empty')
+      if [ -z "$setting_json" ]; then
+        log_verbose "$setting_key: not configured, skipped"
+        continue
+      fi
+      "apply_$setting_key" "$owner" "$repo_name" "$setting_json"
+    done
 
     if [ "$REPO_HEADER_OUTPUT" = true ]; then
       md_log ""
