@@ -8,7 +8,8 @@ on:
 jobs:
   post-approval-request:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request_target'
+    # Only fork PRs need an approval request; same-repository PRs run without approval
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository
     permissions:
       pull-requests: write
     steps:
@@ -26,6 +27,8 @@ jobs:
   preview:
     runs-on: ubuntu-latest
     needs: post-approval-request
+    # The comment job is skipped for same-repository PRs; run anyway unless it failed or the run was cancelled
+    if: ${{ !cancelled() && (needs.post-approval-request.result == 'success' || needs.post-approval-request.result == 'skipped') }}
     # Only PRs from forks need approval through the 'pr-preview' Environment
     environment: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-preview' || '' }}
     permissions:
