@@ -70,7 +70,7 @@ Progress and errors go to stderr; stdout carries only the Markdown output. A fai
 
 ### Settings
 
-A setting that is absent from the config is not skipped: it runs with mode `upsert` and built-in fallbacks (for example `workflow_permissions` falls back to `write` and `true`, and `copilot_code_review` to `true` for both parameters). Set `"mode": "skip"` explicitly to disable a setting.
+A setting key that is absent from the effective settings of a repository (`defaults` plus the matched `rules`) is skipped and logged with `--verbose`. A key mentioned by a rule, including through `_all`, counts as configured. Inside a configured setting, a missing value key still uses a built-in fallback (`workflow_permissions` falls back to `write` and `true`, and `copilot_code_review` to `true` for both parameters). Set `"mode": "skip"` explicitly to disable a setting that is present.
 
 - `repo_settings.values`: keys and values sent to the update-repository API. Booleans and numbers are sent as typed values, everything else as strings. Only keys that differ from the current state are reported.
 - `workflow_permissions.values`: `default_workflow_permissions` (`read` or `write`) and `can_approve_pull_request_reviews`.
