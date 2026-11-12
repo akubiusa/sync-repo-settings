@@ -726,9 +726,10 @@ apply_rulesets() {
       --argjson pr_params "$(echo "$template" | jq '.rules.pull_request // {}')" \
       --argjson copilot_params "$(echo "$template" | jq '.rules.copilot_code_review // {}')" \
       --argjson sc_params "$(echo "$template" | jq '.rules.required_status_checks | del(.detection, .exclude_patterns, .prefer_finished_jobs) // {}')" \
+      --argjson flags "$(echo "$template" | jq '.rules // {}')" \
       '[
-        {"type": "deletion"},
-        {"type": "non_fast_forward"},
+        (if $flags.deletion != false then {"type": "deletion"} else empty end),
+        (if $flags.non_fast_forward != false then {"type": "non_fast_forward"} else empty end),
         {"type": "pull_request", "parameters": $pr_params},
         {"type": "required_status_checks", "parameters": ($sc_params + {"required_status_checks": $status_checks})},
         {"type": "copilot_code_review", "parameters": $copilot_params}
