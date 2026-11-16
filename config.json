@@ -31,6 +31,61 @@
       }
     },
 
+    "actions_policies": {
+      "mode": "insert",
+      "values": [
+        {
+          "name": "Allow all Actions events",
+          "enforcement": "active",
+          "rules": [
+            {
+              "type": "restrict_action_events",
+              "parameters": {
+                "allowed_events": [
+                  "branch_protection_rule",
+                  "check_run",
+                  "check_suite",
+                  "create",
+                  "delete",
+                  "deployment",
+                  "deployment_status",
+                  "discussion",
+                  "discussion_comment",
+                  "fork",
+                  "gollum",
+                  "image_version",
+                  "issue_comment",
+                  "issues",
+                  "label",
+                  "merge_group",
+                  "milestone",
+                  "page_build",
+                  "project",
+                  "project_card",
+                  "project_column",
+                  "public",
+                  "pull_request",
+                  "pull_request_review",
+                  "pull_request_review_comment",
+                  "pull_request_target",
+                  "push",
+                  "registry_package",
+                  "release",
+                  "repository_dispatch",
+                  "schedule",
+                  "status",
+                  "watch",
+                  "workflow_call",
+                  "workflow_dispatch",
+                  "workflow_run"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+
     "rulesets": {
       "mode": "upsert",
       "create_if_missing": true,
@@ -99,6 +154,7 @@
         "repo_settings": { "mode": "skip" },
         "workflow_permissions": { "mode": "skip" },
         "actions_variables": { "mode": "skip" },
+        "actions_policies": { "mode": "skip" },
         "rulesets": { "mode": "skip" },
         "copilot_code_review": { "mode": "skip" }
       }

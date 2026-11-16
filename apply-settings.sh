@@ -341,7 +341,7 @@ merge_settings() {
   local all_override=$(echo "$overrides" | jq '.["_all"] // null')
   if [ "$all_override" != "null" ]; then
     local result="$defaults"
-    for key in repo_settings workflow_permissions actions_variables rulesets copilot_code_review; do
+    for key in repo_settings workflow_permissions actions_variables actions_policies rulesets copilot_code_review; do
       result=$(echo "$result" | jq --argjson override "$all_override" ".${key} = (.${key} // {}) * \$override")
     done
     echo "$result"
@@ -351,7 +351,7 @@ merge_settings() {
   # Regular merge (a setting whose mode is skip is never overridden)
   # Protect mode: skip so that later rules cannot overwrite it
   local result="$defaults"
-  for key in repo_settings workflow_permissions actions_variables rulesets copilot_code_review; do
+  for key in repo_settings workflow_permissions actions_variables actions_policies rulesets copilot_code_review; do
     local current_mode
     current_mode=$(echo "$result" | jq -r ".${key}.mode // \"\"")
     local override_value
@@ -549,6 +549,102 @@ apply_actions_variables() {
           continue
         }
       log "    actions_variables: created $key"
+    fi
+  done
+}
+
+# Apply repository Actions policies from the static list in settings.values
+# insert: create only when the repository has no policy; upsert: create or update by name
+# Only repository-level policies are read (has_parents=false); other-named policies are never touched
+apply_actions_policies() {
+  local owner="$1"
+  local repo="$2"
+  local settings="$3"
+
+  local mode
+  mode=$(echo "$settings" | jq -r '.mode // "upsert"')
+
+  if [ "$mode" = "skip" ]; then
+    log_verbose "actions_policies: skipped"
+    return
+  fi
+
+  local policies_path="/repos/$owner/$repo/actions/policies"
+  local list_error list_json list_msg
+  list_error=$(create_temp_file) || return 0
+  list_json=$(gh_api "$policies_path?per_page=100&has_parents=false" 2>"$list_error") || {
+    list_msg=$(cat "$list_error")
+    if echo "$list_msg" | grep -qE 'HTTP 403|HTTP 404|403 Forbidden|Not Found'; then
+      log "    actions_policies: skipped (cannot list policies; Administration permission may be missing)"
+    else
+      log "    actions_policies: failed to list policies - $list_msg"
+    fi
+    return 0
+  }
+
+  if ! echo "$list_json" | jq -e '.policies | type == "array"' > /dev/null 2>&1; then
+    log "    actions_policies: failed to list policies - unexpected response"
+    return 0
+  fi
+
+  if [ "$mode" = "insert" ] && [ "$(echo "$list_json" | jq '.policies | length')" != "0" ]; then
+    log_verbose "actions_policies: a policy already exists, skipped"
+    return
+  fi
+
+  local count i
+  count=$(echo "$settings" | jq '.values // [] | length')
+  for ((i=0; i<count; i++)); do
+    local desired name existing existing_id
+    desired=$(echo "$settings" | jq -c --argjson i "$i" '.values[$i]')
+    name=$(echo "$desired" | jq -r '.name')
+    existing=$(echo "$list_json" | jq -c --arg name "$name" '[.policies[] | select(.name == $name)] | first // empty')
+
+    local action method path payload done_label error_label
+    if [ -z "$existing" ]; then
+      action="create"
+      method="POST"
+      path="$policies_path"
+      payload="$desired"
+      done_label="created"
+      error_label="creation error"
+    else
+      # Only type and parameters of each rule are compared, with allowed_events order ignored
+      local differs
+      differs=$(jq -n --argjson desired "$desired" --argjson existing "$existing" '
+        def norm: map({type, parameters: ((.parameters // {}) | if has("allowed_events") then .allowed_events |= sort else . end)}) | sort_by(.type);
+        ($desired.enforcement != $existing.enforcement)
+          or (($desired.rules // [] | norm) != ($existing.rules // [] | norm))')
+      if [ "$differs" != "true" ]; then
+        log_verbose "actions_policies: \"$name\" is up to date"
+        continue
+      fi
+      existing_id=$(echo "$existing" | jq -r '.id')
+      action="update"
+      method="PUT"
+      path="$policies_path/$existing_id"
+      payload=$(echo "$desired" | jq -c '{name, enforcement, rules}')
+      done_label="updated"
+      error_label="update error"
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+      log "    [DRY-RUN] actions_policies ($mode): $action \"$name\""
+      md_log_change "  - **actions_policies** ($mode): $action \"$name\""
+      continue
+    fi
+
+    local mutate_error mutate_msg
+    mutate_error=$(create_temp_file) || return 0
+    if echo "$payload" | gh_api -X "$method" "$path" --input - > /dev/null 2>"$mutate_error"; then
+      log "    actions_policies: $done_label \"$name\""
+    else
+      mutate_msg=$(cat "$mutate_error")
+      if echo "$mutate_msg" | grep -qE 'HTTP 403|403 Forbidden'; then
+        log "    actions_policies: skipped (HTTP 403, Administration permission required)"
+      else
+        log "    actions_policies: $error_label - $mutate_msg"
+      fi
     fi
   done
 }
@@ -1161,7 +1257,7 @@ for owner in "${TARGETS[@]}"; do
     REPO_HEADER_OUTPUT=false
 
     # Each key names its apply_<key> function; a key absent from the config is skipped
-    for setting_key in repo_settings workflow_permissions actions_variables rulesets copilot_code_review; do
+    for setting_key in repo_settings workflow_permissions actions_variables actions_policies rulesets copilot_code_review; do
       setting_json=$(echo "$effective_settings" | jq -c --arg key "$setting_key" '.[$key] // empty')
       if [ -z "$setting_json" ]; then
         log_verbose "$setting_key: not configured, skipped"
